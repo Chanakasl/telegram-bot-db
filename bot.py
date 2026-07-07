@@ -76,20 +76,37 @@ def get_blogger_videos_keyboard():
             title = entry.get('title', {}).get('$t', 'වීඩියෝවක්')
             content = entry.get('content', {}).get('$t', '')
             
-            links = re.findall(r'src=["\'](https?://[^"\']+)["\']', content)
+            # Photos සහ Videos වෙන වෙනම වෙන් කරගැනීම
+            images = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', content, re.IGNORECASE)
             
-            if links:
-                real_video_url = links[0]
+            all_src = re.findall(r'src=["\'](https?://[^"\']+)["\']', content, re.IGNORECASE)
+            videos = []
+            for src in all_src:
+                if src not in images and not src.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+                    videos.append(src)
+            
+            real_video_url = videos[0] if videos else None
+            
+            if images or real_video_url:
+                post_data = {
+                    "images": images,
+                    "video": real_video_url
+                }
                 
                 video_id = None
                 for k, v in db.items():
-                    if v == real_video_url:
-                        video_id = k
-                        break
+                    if isinstance(v, dict):
+                        if v.get("video") == real_video_url and v.get("images") == images:
+                            video_id = k
+                            break
+                    elif isinstance(v, str): # පරණ Database එකට ගැලපෙන්න
+                        if v == real_video_url and not images:
+                            video_id = k
+                            break
                 
                 if not video_id:
                     video_id = generate_id()
-                    db[video_id] = real_video_url
+                    db[video_id] = post_data
                     db_changed = True
                 
                 deep_link = f"https://t.me/{BOT_USERNAME}?start={video_id}"
@@ -106,47 +123,66 @@ def get_blogger_videos_keyboard():
         print(f"Blogger Fetch Error: {e}")
         return None
 
-# වීඩියෝව Download කර Upload කරන වෙනම Function එක
-def process_and_send_video(chat_id, video_url):
-    wait_msg = bot.send_message(chat_id, "⏳ වීඩියෝව සූදානම් වෙමින් පවතී. කරුණාකර මඳ වේලාවක් රැඳී සිටින්න...")
-    bot.send_chat_action(chat_id, 'upload_video')
+# Photos සහ Video යවන Function එක
+def process_and_send_media(chat_id, media_data):
+    # පරණ Database Format එකට සහය දැක්වීමට
+    if isinstance(media_data, str):
+        images = []
+        video_url = media_data
+    else:
+        images = media_data.get("images", [])
+        video_url = media_data.get("video")
+
+    wait_msg = bot.send_message(chat_id, "⏳ ඔබගේ ගොනු සූදානම් වෙමින් පවතී. කරුණාකර මඳ වේලාවක් රැඳී සිටින්න...")
     
+    # 1. පෝස්ට් එකේ Photos තියෙනවා නම් ඒවා Album එකක් ලෙස යැවීම
+    if images:
+        try:
+            # Telegram එකේ එකවරකට උපරිම Photos 10යි යවන්න පුළුවන්
+            media_group = [types.InputMediaPhoto(url) for url in images[:10]]
+            sent_photos = bot.send_media_group(chat_id, media_group)
+            
+            # යවපු හැම Photo එකක්ම විනාඩි 30න් ඩිලීට් වෙන්න ටයිමර් එක දැමීම
+            for p_msg in sent_photos:
+                auto_delete_message(chat_id, p_msg.message_id, delay=1800)
+        except Exception as e:
+            print(f"Photos Send Error: {e}")
+
+    # 2. පෝස්ට් එකේ Video එක යැවීම
+    if video_url:
+        bot.send_chat_action(chat_id, 'upload_video')
+        try:
+            ydl_opts = {
+                'outtmpl': f'video_{chat_id}_%(id)s.%(ext)s',
+                'format': 'best',
+                'quiet': True
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=True)
+                filename = ydl.prepare_filename(info)
+                
+            caption_text = "✅ ස්තූතියි! මෙන්න ඔබ ඉල්ලූ වීඩියෝව:\n\n⚠️ ආරක්ෂක හේතූන් මත මෙම ගොනු විනාඩි 30කින් ස්වයංක්‍රීයව මැකී යනු ඇත!"
+            
+            with open(filename, 'rb') as video_file:
+                sent_msg = bot.send_video(chat_id, video=video_file, caption=caption_text, timeout=120)
+                
+            os.remove(filename)
+            auto_delete_message(chat_id, sent_msg.message_id, delay=1800)
+            
+        except Exception as e:
+            print(f"Video Processing Error: {e}")
+            fallback_msg = bot.send_message(
+                chat_id,
+                f"❌ වීඩියෝවේ ප්‍රමාණය විශාල බැවින් හෝ දෝෂයක් නිසා කෙලින්ම Telegram වෙත යැවිය නොහැක.\n\n🔗 කරුණාකර පහත ලින්ක් එකෙන් නරඹන්න:\n{video_url}\n\n⚠️ මෙම පණිවිඩය විනාඩි 30කින් මැකී යනු ඇත."
+            )
+            auto_delete_message(chat_id, fallback_msg.message_id, delay=1800)
+
+    # දැනුම්දීමේ මැසේජ් එක මකා දැමීම
     try:
-        # වීඩියෝව Railway සර්වර් එකට ඩවුන්ලෝඩ් කිරීම
-        ydl_opts = {
-            'outtmpl': f'video_{chat_id}_%(id)s.%(ext)s',
-            'format': 'best',
-            'quiet': True
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
-            filename = ydl.prepare_filename(info)
-            
-        caption_text = "✅ ස්තූතියි! මෙන්න ඔබ ඉල්ලූ වීඩියෝව:\n\n⚠️ ආරක්ෂක හේතූන් මත මෙම වීඩියෝව විනාඩි 30කින් ස්වයංක්‍රීයව මැකී යනු ඇත!"
-        
-        # ඩවුන්ලෝඩ් කළ වීඩියෝව Telegram එකට යැවීම
-        with open(filename, 'rb') as video_file:
-            sent_msg = bot.send_video(chat_id, video=video_file, caption=caption_text, timeout=120)
-            
-        # සර්වර් එකෙන් වීඩියෝව මකා දැමීම (Storage ඉතුරු වීමට)
-        os.remove(filename)
-        
-        # දැනුම්දීමේ මැසේජ් එක මකා දැමීම
         bot.delete_message(chat_id, wait_msg.message_id)
-        
-        # විනාඩි 30න් ඩිලීට් කිරීමේ ටයිමර් එක
-        auto_delete_message(chat_id, sent_msg.message_id, delay=1800)
-        
-    except Exception as e:
-        print(f"Video Processing Error: {e}")
-        bot.delete_message(chat_id, wait_msg.message_id)
-        
-        fallback_msg = bot.send_message(
-            chat_id,
-            f"❌ වීඩියෝවේ ප්‍රමාණය විශාල බැවින් (50MB ට වැඩි) හෝ දෝෂයක් නිසා කෙලින්ම Telegram වෙත යැවිය නොහැක.\n\n🔗 කරුණාකර පහත ලින්ක් එකෙන් නරඹන්න:\n{video_url}\n\n⚠️ මෙම පණිවිඩය විනාඩි 30කින් මැකී යනු ඇත."
-        )
-        auto_delete_message(chat_id, fallback_msg.message_id, delay=1800)
+    except Exception:
+        pass
 
 @bot.message_handler(commands=['start'])
 def handle_start(message):
@@ -171,9 +207,8 @@ def handle_start(message):
     db, _ = get_db()
     
     if video_id in db:
-        real_video_url = db[video_id]
-        # Download සහ Send කිරීම වෙනම Thread එකකින් ආරම්භ කිරීම
-        threading.Thread(target=process_and_send_video, args=(chat_id, real_video_url)).start()
+        media_data = db[video_id]
+        threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
     else:
         bot.send_message(chat_id, "❌ මෙම ලින්ක් එක වලංගු නැත හෝ කල් ඉකුත් වී ඇත.")
 
