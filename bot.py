@@ -32,7 +32,7 @@ def save_db(data, sha):
 
 # Ad Link එක හැදීම (ShrinkEarn උදාහරණයක් ලෙස)
 def create_short_link(long_url):
-    api_url = f"https://shrinkearn.com/api?api={SHORTENER_API}&url={long_url}"
+    api_url = f"https://shrinkme.io/api?api={SHORTENER_API}&url={long_url}"
     response = requests.get(api_url).json()
     if response['status'] == 'success':
         return response['shortenedUrl']
