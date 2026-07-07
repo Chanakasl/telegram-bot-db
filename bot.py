@@ -73,17 +73,21 @@ def get_blogger_videos_keyboard():
         db_changed = False
 
         for entry in entries:
-            title = entry.get('title', {}).get('$t', 'වීඩියෝවක්')
+            title = entry.get('title', {}).get('$t', 'Video')
             content = entry.get('content', {}).get('$t', '')
             
-            # Photos සහ Videos වෙන වෙනම වෙන් කරගැනීම
+            # Photos සහ Videos ඉතා නිවැරදිව වෙන් කරගැනීම
             images = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', content, re.IGNORECASE)
             
-            all_src = re.findall(r'src=["\'](https?://[^"\']+)["\']', content, re.IGNORECASE)
+            all_links = re.findall(r'(?:src|href)=["\'](https?://[^"\']+)["\']', content, re.IGNORECASE)
             videos = []
-            for src in all_src:
-                if src not in images and not src.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
-                    videos.append(src)
+            
+            for link in all_links:
+                link_lower = link.lower()
+                if link not in images and not link_lower.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.css', '.js')):
+                    if 'video.g' in link_lower or 'youtube.com' in link_lower or 'youtu.be' in link_lower or '.mp4' in link_lower:
+                        if link not in videos:
+                            videos.append(link)
             
             real_video_url = videos[0] if videos else None
             
@@ -99,7 +103,7 @@ def get_blogger_videos_keyboard():
                         if v.get("video") == real_video_url and v.get("images") == images:
                             video_id = k
                             break
-                    elif isinstance(v, str): # පරණ Database එකට ගැලපෙන්න
+                    elif isinstance(v, str): 
                         if v == real_video_url and not images:
                             video_id = k
                             break
@@ -123,9 +127,7 @@ def get_blogger_videos_keyboard():
         print(f"Blogger Fetch Error: {e}")
         return None
 
-# Photos සහ Video යවන Function එක
 def process_and_send_media(chat_id, media_data):
-    # පරණ Database Format එකට සහය දැක්වීමට
     if isinstance(media_data, str):
         images = []
         video_url = media_data
@@ -133,39 +135,43 @@ def process_and_send_media(chat_id, media_data):
         images = media_data.get("images", [])
         video_url = media_data.get("video")
 
-    wait_msg = bot.send_message(chat_id, "⏳ ඔබගේ ගොනු සූදානම් වෙමින් පවතී. කරුණාකර මඳ වේලාවක් රැඳී සිටින්න...")
+    wait_msg = bot.send_message(chat_id, "⏳ Preparing your files. Please wait...")
     
-    # 1. පෝස්ට් එකේ Photos තියෙනවා නම් ඒවා Album එකක් ලෙස යැවීම
+    # පින්තූර තිබේ නම් යැවීම
     if images:
         try:
-            # Telegram එකේ එකවරකට උපරිම Photos 10යි යවන්න පුළුවන්
+            bot.edit_message_text("🖼️ Sending photos...", chat_id, wait_msg.message_id)
             media_group = [types.InputMediaPhoto(url) for url in images[:10]]
             sent_photos = bot.send_media_group(chat_id, media_group)
             
-            # යවපු හැම Photo එකක්ම විනාඩි 30න් ඩිලීට් වෙන්න ටයිමර් එක දැමීම
             for p_msg in sent_photos:
                 auto_delete_message(chat_id, p_msg.message_id, delay=1800)
         except Exception as e:
             print(f"Photos Send Error: {e}")
 
-    # 2. පෝස්ට් එකේ Video එක යැවීම
+    # වීඩියෝවක් තිබේ නම් යැවීම
     if video_url:
-        bot.send_chat_action(chat_id, 'upload_video')
         try:
+            bot.edit_message_text("📥 Downloading video to the server. Please hold on (this might take a few minutes)...", chat_id, wait_msg.message_id)
+            bot.send_chat_action(chat_id, 'upload_video')
+            
             ydl_opts = {
                 'outtmpl': f'video_{chat_id}_%(id)s.%(ext)s',
                 'format': 'best',
-                'quiet': True
+                'quiet': True,
+                'no_warnings': True
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=True)
                 filename = ydl.prepare_filename(info)
                 
-            caption_text = "✅ ස්තූතියි! මෙන්න ඔබ ඉල්ලූ වීඩියෝව:\n\n⚠️ ආරක්ෂක හේතූන් මත මෙම ගොනු විනාඩි 30කින් ස්වයංක්‍රීයව මැකී යනු ඇත!"
+            caption_text = "✅ Thank you! Here is your requested video:\n\n⚠️ For security reasons, these files will be automatically deleted in 30 minutes!"
+            
+            bot.edit_message_text("📤 Uploading video to Telegram...", chat_id, wait_msg.message_id)
             
             with open(filename, 'rb') as video_file:
-                sent_msg = bot.send_video(chat_id, video=video_file, caption=caption_text, timeout=120)
+                sent_msg = bot.send_video(chat_id, video=video_file, caption=caption_text, timeout=300)
                 
             os.remove(filename)
             auto_delete_message(chat_id, sent_msg.message_id, delay=1800)
@@ -174,11 +180,13 @@ def process_and_send_media(chat_id, media_data):
             print(f"Video Processing Error: {e}")
             fallback_msg = bot.send_message(
                 chat_id,
-                f"❌ වීඩියෝවේ ප්‍රමාණය විශාල බැවින් හෝ දෝෂයක් නිසා කෙලින්ම Telegram වෙත යැවිය නොහැක.\n\n🔗 කරුණාකර පහත ලින්ක් එකෙන් නරඹන්න:\n{video_url}\n\n⚠️ මෙම පණිවිඩය විනාඩි 30කින් මැකී යනු ඇත."
+                f"❌ An error occurred while downloading, or the video size is too large.\n\n🔗 Please watch it via the link below:\n{video_url}\n\n⚠️ This message will be deleted in 30 minutes."
             )
             auto_delete_message(chat_id, fallback_msg.message_id, delay=1800)
+    elif not images and not video_url:
+        bot.send_message(chat_id, "⚠️ No video or image was detected in this post.")
 
-    # දැනුම්දීමේ මැසේජ් එක මකා දැමීම
+    # අවසානයේ status මැසේජ් එක ඩිලීට් කිරීම
     try:
         bot.delete_message(chat_id, wait_msg.message_id)
     except Exception:
@@ -196,11 +204,11 @@ def handle_start(message):
         if keyboard:
             bot.send_message(
                 chat_id, 
-                "👋 සාදරයෙන් පිළිගනිමු!\n\nපහත බොත්තම් ක්ලික් කර Ad එක බැලීමෙන් පසු ඔබට වීඩියෝව නැරඹිය හැක:", 
+                "👋 Welcome!\n\nClick the buttons below and watch the Ad to unlock your video:", 
                 reply_markup=keyboard
             )
         else:
-            bot.send_message(chat_id, "දැනට කිසිදු වීඩියෝවක් සොයාගත නොහැක. පසුව උත්සාහ කරන්න.")
+            bot.send_message(chat_id, "No videos found at the moment. Please try again later.")
         return
         
     video_id = text[1]
@@ -210,7 +218,7 @@ def handle_start(message):
         media_data = db[video_id]
         threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
     else:
-        bot.send_message(chat_id, "❌ මෙම ලින්ක් එක වලංගු නැත හෝ කල් ඉකුත් වී ඇත.")
+        bot.send_message(chat_id, "❌ This link is invalid or has expired.")
 
 print("Bot is running...")
 bot.polling(none_stop=True)
