@@ -16,10 +16,10 @@ from github import Github
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO_NAME = os.environ.get("GITHUB_REPO_NAME")
-SHORTENER_API = os.environ.get("SHORTENER_API")
+SHORTENER_API = os.environ.get("SHORTENER_API") # අලුත් API Key එක Railway එකෙන් ගනී
 BOT_USERNAME = os.environ.get("BOT_USERNAME")
 BLOG_URL = os.environ.get("BLOG_URL")
-VERCEL_URL = os.environ.get("VERCEL_URL") # Vercel සයිට් එකේ ලින්ක් එක
+VERCEL_URL = os.environ.get("VERCEL_URL") 
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 github = Github(GITHUB_TOKEN)
@@ -55,11 +55,13 @@ def get_db():
 def save_db(data, sha): 
     repo.update_file("database.json", "Update DB", json.dumps(data), sha)
 
+# --- ShrinkEarn API එකට යාවත්කාලීන කළ කොටස ---
 def create_short_link(long_url):
-    api = f"https://shrinkme.io/api?api={SHORTENER_API}&url={long_url}"
+    api = f"https://shrinkearn.com/api?api={SHORTENER_API}&url={long_url}"
     try: 
         return requests.get(api).json().get('shortenedUrl', long_url)
-    except Exception: 
+    except Exception as e: 
+        print(f"Shortener Error: {e}")
         return long_url
 
 # --- Media Processing (Photos + Video Download & Send) ---
