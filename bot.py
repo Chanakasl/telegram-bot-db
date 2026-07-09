@@ -19,19 +19,11 @@ GITHUB_REPO_NAME = os.environ.get("GITHUB_REPO_NAME")
 SHORTENER_API = os.environ.get("SHORTENER_API")
 BOT_USERNAME = os.environ.get("BOT_USERNAME")
 BLOG_URL = os.environ.get("BLOG_URL")
+GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL") # ඔයාගේ අලුත් වෙබ් අඩවියේ ලින්ක් එක (උදා: https://chakybea.github.io/bot-unlock-page)
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 github = Github(GITHUB_TOKEN)
 repo = github.get_repo(GITHUB_REPO_NAME)
-
-# Key පෙන්නන්න Telegraph එකෙන් Account එකක් ඔටෝ හදාගැනීම
-try:
-    print("Initializing Telegraph account for keys...")
-    tg_acc = requests.get("https://api.telegra.ph/createAccount?short_name=KeyGen").json()
-    TELEGRAPH_TOKEN = tg_acc.get('result', {}).get('access_token', '')
-except Exception as e:
-    print(f"Telegraph Init Error: {e}")
-    TELEGRAPH_TOKEN = ""
 
 def generate_id(length=8):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
@@ -48,31 +40,6 @@ def save_db(data, sha):
         repo.update_file("database.json", "Update DB", json.dumps(data), sha)
     else:
         repo.create_file("database.json", "Create DB", json.dumps(data))
-
-# Key එක පෙන්වන වෙබ් පිටුව සෑදීම
-def create_key_page(key):
-    if not TELEGRAPH_TOKEN:
-        # Telegraph වැඩ නැත්නම් පරණ ක්‍රමයට Auto-Link එක දෙනවා (Backup plan)
-        return f"https://t.me/{BOT_USERNAME}?start={key}"
-        
-    content = json.dumps([
-        {"tag": "h3", "children": ["Your Verification Key:"]},
-        {"tag": "p", "children": ["Please copy the exact key below and send it to the Telegram Bot to unlock your video."]},
-        {"tag": "h2", "children": [key]}
-    ])
-    
-    try:
-        res = requests.post("https://api.telegra.ph/createPage", data={
-            "access_token": TELEGRAPH_TOKEN,
-            "title": "Unlock Key",
-            "content": content
-        }).json()
-        if res.get('ok'):
-            return res['result']['url']
-    except Exception as e:
-        print(f"Telegraph Page Error: {e}")
-        
-    return f"https://t.me/{BOT_USERNAME}?start={key}"
 
 def create_short_link(long_url):
     api_url = f"https://shrinkme.io/api?api={SHORTENER_API}&url={long_url}"
@@ -224,68 +191,81 @@ def handle_video_request(call):
     video_id = call.data.split('_')[1]
     chat_id = call.message.chat.id
     
-    # අකුරු 10ක One-time UUID එකක් සෑදීම
     unique_token = str(uuid.uuid4().hex)[:10]
     
     db, sha = get_db()
-    db[f"token_{unique_token}"] = video_id
+    # පැයකින් (තත්පර 3600 කින්) කල් ඉකුත් වන වේලාව සේව් කිරීම
+    expire_time = time.time() + 3600 
+    
+    db[f"token_{unique_token}"] = {
+        "video_id": video_id, 
+        "expire_time": expire_time
+    }
     save_db(db, sha)
     
-    # Key එක පෙන්වන Telegraph Page එක හදලා ඒක Short කිරීම
-    key_page_url = create_key_page(unique_token)
+    # GitHub Pages වෙබ් අඩවියට URL Parameter එකක් විදිහට Key එක යැවීම
+    # GITHUB_PAGES_URL එක අගට slash (/) එකක් තියෙනවා නම් ඒක අයින් කරලා ලින්ක් එක හදන්න
+    base_url = GITHUB_PAGES_URL.rstrip('/') if GITHUB_PAGES_URL else "https://example.com"
+    key_page_url = f"{base_url}?key={unique_token}"
+    
     short_url = create_short_link(key_page_url)
     
     bot.send_message(
         chat_id, 
-        f"🔗 Click the link below, watch the Ad, and get your verification key!\n\n👉 {short_url}\n\n⚠️ **Instruction:** After getting the key from the website, come back here and send it to me as a message."
+        f"🔗 Click the link below, watch the Ad, and get your verification key!\n\n👉 {short_url}\n\n⚠️ **Instruction:** After getting the key from the website, come back here and send it to me. (This key is valid for 1 hour)"
     )
     bot.answer_callback_query(call.id)
 
-# Start කමාන්ඩ් එකට සහ යූසර් එවන Key එකට ප්‍රතිචාර දැක්වීම
 @bot.message_handler(func=lambda message: True)
 def handle_text_and_start(message):
     text = message.text.strip()
     chat_id = message.chat.id
     
-    # 1. සාමාන්‍යයෙන් Bot ව ස්ටාර්ට් කරද්දී
     if text == '/start':
         bot.send_chat_action(chat_id, 'typing')
         keyboard = get_blogger_videos_keyboard()
-        
         if keyboard:
-            bot.send_message(
-                chat_id, 
-                "👋 Welcome!\n\nClick on a video below to generate your unique Ad link:", 
-                reply_markup=keyboard
-            )
+            bot.send_message(chat_id, "👋 Welcome!\n\nClick on a video below to generate your unique Ad link:", reply_markup=keyboard)
         else:
             bot.send_message(chat_id, "No videos found at the moment. Please try again later.")
         return
 
-    # 2. යූසර් Key එකක් Paste කරලා යැව්වම
+    # යූසර් Key එකක් Paste කරලා යැව්වම
     if text.startswith('/start '):
-        token = text.split()[1] # Backup if they use deep link
+        token = text.split()[1] 
     else:
-        token = text # User typed the manual key
+        token = text 
         
     db, sha = get_db()
     token_key = f"token_{token}"
     
     if token_key in db:
-        video_id = db[token_key]
+        token_data = db[token_key]
+        
+        if isinstance(token_data, dict):
+            video_id = token_data.get("video_id")
+            expire_time = token_data.get("expire_time", 0)
+            
+            # පැය ඉවර වෙලාද කියලා බලනවා
+            if time.time() > expire_time:
+                bot.send_message(chat_id, "❌ This Key has expired! Please generate a new one from the menu.")
+                del db[token_key]
+                save_db(db, sha)
+                return
+        else:
+            video_id = token_data 
+            
         media_data = db.get(video_id)
         
         if media_data:
             threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
-            
-            # Token එක මකා දැමීම
-            del db[token_key]
-            save_db(db, sha)
+            # මින් පෙර මෙහි තිබූ "del db[token_key]" ඉවත් කර ඇත. 
+            # එබැවින් පැයක් යනතුරු කීප සැරයක් වුවද වීඩියෝව ගත හැක.
         else:
             bot.send_message(chat_id, "❌ Error retrieving video data.")
     else:
         if not text.startswith('/'):
-            bot.send_message(chat_id, "❌ Invalid Key! The key is incorrect, expired, or has already been used.")
+            bot.send_message(chat_id, "❌ Invalid Key! The key is incorrect or has expired.")
 
 print("Bot is running...")
 bot.polling(none_stop=True)
