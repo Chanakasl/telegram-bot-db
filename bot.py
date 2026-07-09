@@ -131,12 +131,14 @@ def send_final_links(chat_id, media):
     if media.get("images"):
         bot.send_media_group(chat_id, [types.InputMediaPhoto(u) for u in media["images"]])
     
+    # වීඩියෝ ලින්ක් එක Base64 කරලා රීඩිරෙක්ට් පේජ් එකට යවනවා
     encoded = base64.b64encode(media["video"].encode()).decode()
-    player_url = f"{GITHUB_PAGES_URL.rstrip('/')}/player.html?src={encoded}"
+    redirect_url = f"{GITHUB_PAGES_URL.rstrip('/')}/redirect.html?src={encoded}"
     
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🍿 Watch Securely", url=player_url))
-    bot.send_message(chat_id, "✅ Your video is ready:", reply_markup=markup)
+    markup.add(types.InlineKeyboardButton("🍿 Unlock Video", url=redirect_url))
+    bot.send_message(chat_id, "✅ Your verification is successful. Click below to access:", reply_markup=markup)
+
 
 print("Bot is running...")
 bot.polling()
