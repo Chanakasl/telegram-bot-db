@@ -19,7 +19,7 @@ GITHUB_REPO_NAME = os.environ.get("GITHUB_REPO_NAME")
 SHORTENER_API = os.environ.get("SHORTENER_API")
 BOT_USERNAME = os.environ.get("BOT_USERNAME")
 BLOG_URL = os.environ.get("BLOG_URL")
-GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL") # ඔයාගේ අලුත් වෙබ් අඩවියේ ලින්ක් එක (උදා: https://chakybea.github.io/bot-unlock-page)
+GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL") # අලුත් වෙබ් අඩවියේ ලින්ක් එක
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 github = Github(GITHUB_TOKEN)
@@ -191,28 +191,36 @@ def handle_video_request(call):
     video_id = call.data.split('_')[1]
     chat_id = call.message.chat.id
     
-    unique_token = str(uuid.uuid4().hex)[:10]
-    
     db, sha = get_db()
-    # පැයකින් (තත්පර 3600 කින්) කල් ඉකුත් වන වේලාව සේව් කිරීම
-    expire_time = time.time() + 3600 
     
-    db[f"token_{unique_token}"] = {
-        "video_id": video_id, 
-        "expire_time": expire_time
-    }
+    # 1. යූසර් දැනටමත් අන්ලොක් වෙලාද කියලා බලනවා
+    auth_key = f"auth_{chat_id}"
+    if auth_key in db:
+        expire_time = db[auth_key]
+        if time.time() < expire_time:
+            # පැය ඉවර වෙලා නැත්නම්, කෙලින්ම වීඩියෝ එක දෙනවා!
+            media_data = db.get(video_id)
+            if media_data:
+                bot.answer_callback_query(call.id, "✅ Unlocked! Sending video...")
+                threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
+                return
+        else:
+            # පැය ඉවර නම් පරණ රෙකෝඩ් එක මකනවා
+            del db[auth_key]
+            save_db(db, sha)
+            db, sha = get_db() # Database එක අලුත් කරගන්නවා
+
+    # 2. අන්ලොක් වෙලා නැත්නම් විතරක් අලුත් Key එකක් දෙනවා
+    unique_token = str(uuid.uuid4().hex)[:10]
+    db[f"token_{unique_token}"] = video_id
     save_db(db, sha)
     
-    # GitHub Pages වෙබ් අඩවියට URL Parameter එකක් විදිහට Key එක යැවීම
-    # GITHUB_PAGES_URL එක අගට slash (/) එකක් තියෙනවා නම් ඒක අයින් කරලා ලින්ක් එක හදන්න
-    base_url = GITHUB_PAGES_URL.rstrip('/') if GITHUB_PAGES_URL else "https://example.com"
-    key_page_url = f"{base_url}?key={unique_token}"
-    
+    key_page_url = f"{GITHUB_PAGES_URL}?key={unique_token}"
     short_url = create_short_link(key_page_url)
     
     bot.send_message(
         chat_id, 
-        f"🔗 Click the link below, watch the Ad, and get your verification key!\n\n👉 {short_url}\n\n⚠️ **Instruction:** After getting the key from the website, come back here and send it to me. (This key is valid for 1 hour)"
+        f"🔗 Click the link below, watch the Ad, and get your verification key!\n\n👉 {short_url}\n\n⚠️ **Instruction:** Send the key back to me. **(This will unlock ALL videos for 1 hour!)**"
     )
     bot.answer_callback_query(call.id)
 
@@ -230,7 +238,6 @@ def handle_text_and_start(message):
             bot.send_message(chat_id, "No videos found at the moment. Please try again later.")
         return
 
-    # යූසර් Key එකක් Paste කරලා යැව්වම
     if text.startswith('/start '):
         token = text.split()[1] 
     else:
@@ -240,32 +247,24 @@ def handle_text_and_start(message):
     token_key = f"token_{token}"
     
     if token_key in db:
-        token_data = db[token_key]
+        video_id = db[token_key]
         
-        if isinstance(token_data, dict):
-            video_id = token_data.get("video_id")
-            expire_time = token_data.get("expire_time", 0)
-            
-            # පැය ඉවර වෙලාද කියලා බලනවා
-            if time.time() > expire_time:
-                bot.send_message(chat_id, "❌ This Key has expired! Please generate a new one from the menu.")
-                del db[token_key]
-                save_db(db, sha)
-                return
-        else:
-            video_id = token_data 
-            
+        # 3. හරි Key එකක් දුන්නම, යූසර්ව පැයකට (තත්පර 3600 කට) අන්ලොක් කරනවා!
+        db[f"auth_{chat_id}"] = time.time() + 3600
+        
         media_data = db.get(video_id)
-        
         if media_data:
+            bot.send_message(chat_id, "🎉 **Success! The Bot is now unlocked for 1 HOUR.**\nYou can download any video directly without ads!")
             threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
-            # මින් පෙර මෙහි තිබූ "del db[token_key]" ඉවත් කර ඇත. 
-            # එබැවින් පැයක් යනතුරු කීප සැරයක් වුවද වීඩියෝව ගත හැක.
+            
+            # පාවිච්චි කරපු Key එක මකලා දානවා වෙන අයට ගන්න බැරි වෙන්න
+            del db[token_key]
+            save_db(db, sha)
         else:
             bot.send_message(chat_id, "❌ Error retrieving video data.")
     else:
         if not text.startswith('/'):
-            bot.send_message(chat_id, "❌ Invalid Key! The key is incorrect or has expired.")
+            bot.send_message(chat_id, "❌ Invalid Key! The key is incorrect, expired, or has already been used.")
 
 print("Bot is running...")
 bot.polling(none_stop=True)
