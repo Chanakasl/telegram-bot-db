@@ -9,6 +9,7 @@ import threading
 import time
 import re
 import yt_dlp
+import uuid
 from github import Github
 
 # Railway Environment Variables
@@ -22,6 +23,15 @@ BLOG_URL = os.environ.get("BLOG_URL")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 github = Github(GITHUB_TOKEN)
 repo = github.get_repo(GITHUB_REPO_NAME)
+
+# Key පෙන්නන්න Telegraph එකෙන් Account එකක් ඔටෝ හදාගැනීම
+try:
+    print("Initializing Telegraph account for keys...")
+    tg_acc = requests.get("https://api.telegra.ph/createAccount?short_name=KeyGen").json()
+    TELEGRAPH_TOKEN = tg_acc.get('result', {}).get('access_token', '')
+except Exception as e:
+    print(f"Telegraph Init Error: {e}")
+    TELEGRAPH_TOKEN = ""
 
 def generate_id(length=8):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
@@ -38,6 +48,31 @@ def save_db(data, sha):
         repo.update_file("database.json", "Update DB", json.dumps(data), sha)
     else:
         repo.create_file("database.json", "Create DB", json.dumps(data))
+
+# Key එක පෙන්වන වෙබ් පිටුව සෑදීම
+def create_key_page(key):
+    if not TELEGRAPH_TOKEN:
+        # Telegraph වැඩ නැත්නම් පරණ ක්‍රමයට Auto-Link එක දෙනවා (Backup plan)
+        return f"https://t.me/{BOT_USERNAME}?start={key}"
+        
+    content = json.dumps([
+        {"tag": "h3", "children": ["Your Verification Key:"]},
+        {"tag": "p", "children": ["Please copy the exact key below and send it to the Telegram Bot to unlock your video."]},
+        {"tag": "h2", "children": [key]}
+    ])
+    
+    try:
+        res = requests.post("https://api.telegra.ph/createPage", data={
+            "access_token": TELEGRAPH_TOKEN,
+            "title": "Unlock Key",
+            "content": content
+        }).json()
+        if res.get('ok'):
+            return res['result']['url']
+    except Exception as e:
+        print(f"Telegraph Page Error: {e}")
+        
+    return f"https://t.me/{BOT_USERNAME}?start={key}"
 
 def create_short_link(long_url):
     api_url = f"https://shrinkme.io/api?api={SHORTENER_API}&url={long_url}"
@@ -76,9 +111,7 @@ def get_blogger_videos_keyboard():
             title = entry.get('title', {}).get('$t', 'Video')
             content = entry.get('content', {}).get('$t', '')
             
-            # Photos සහ Videos ඉතා නිවැරදිව වෙන් කරගැනීම
             images = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', content, re.IGNORECASE)
-            
             all_links = re.findall(r'(?:src|href)=["\'](https?://[^"\']+)["\']', content, re.IGNORECASE)
             videos = []
             
@@ -113,10 +146,7 @@ def get_blogger_videos_keyboard():
                     db[video_id] = post_data
                     db_changed = True
                 
-                deep_link = f"https://t.me/{BOT_USERNAME}?start={video_id}"
-                short_url = create_short_link(deep_link)
-                
-                button = types.InlineKeyboardButton(text=f"🎬 {title}", url=short_url)
+                button = types.InlineKeyboardButton(text=f"🎬 {title}", callback_data=f"getvid_{video_id}")
                 markup.add(button)
 
         if db_changed:
@@ -137,7 +167,6 @@ def process_and_send_media(chat_id, media_data):
 
     wait_msg = bot.send_message(chat_id, "⏳ Preparing your files. Please wait...")
     
-    # පින්තූර තිබේ නම් යැවීම
     if images:
         try:
             bot.edit_message_text("🖼️ Sending photos...", chat_id, wait_msg.message_id)
@@ -149,7 +178,6 @@ def process_and_send_media(chat_id, media_data):
         except Exception as e:
             print(f"Photos Send Error: {e}")
 
-    # වීඩියෝවක් තිබේ නම් යැවීම
     if video_url:
         try:
             bot.edit_message_text("📥 Downloading video to the server. Please hold on (this might take a few minutes)...", chat_id, wait_msg.message_id)
@@ -186,39 +214,78 @@ def process_and_send_media(chat_id, media_data):
     elif not images and not video_url:
         bot.send_message(chat_id, "⚠️ No video or image was detected in this post.")
 
-    # අවසානයේ status මැසේජ් එක ඩිලීට් කිරීම
     try:
         bot.delete_message(chat_id, wait_msg.message_id)
     except Exception:
         pass
 
-@bot.message_handler(commands=['start'])
-def handle_start(message):
-    text = message.text.split()
+@bot.callback_query_handler(func=lambda call: call.data.startswith('getvid_'))
+def handle_video_request(call):
+    video_id = call.data.split('_')[1]
+    chat_id = call.message.chat.id
+    
+    # අකුරු 10ක One-time UUID එකක් සෑදීම
+    unique_token = str(uuid.uuid4().hex)[:10]
+    
+    db, sha = get_db()
+    db[f"token_{unique_token}"] = video_id
+    save_db(db, sha)
+    
+    # Key එක පෙන්වන Telegraph Page එක හදලා ඒක Short කිරීම
+    key_page_url = create_key_page(unique_token)
+    short_url = create_short_link(key_page_url)
+    
+    bot.send_message(
+        chat_id, 
+        f"🔗 Click the link below, watch the Ad, and get your verification key!\n\n👉 {short_url}\n\n⚠️ **Instruction:** After getting the key from the website, come back here and send it to me as a message."
+    )
+    bot.answer_callback_query(call.id)
+
+# Start කමාන්ඩ් එකට සහ යූසර් එවන Key එකට ප්‍රතිචාර දැක්වීම
+@bot.message_handler(func=lambda message: True)
+def handle_text_and_start(message):
+    text = message.text.strip()
     chat_id = message.chat.id
     
-    if len(text) == 1:
+    # 1. සාමාන්‍යයෙන් Bot ව ස්ටාර්ට් කරද්දී
+    if text == '/start':
         bot.send_chat_action(chat_id, 'typing')
         keyboard = get_blogger_videos_keyboard()
         
         if keyboard:
             bot.send_message(
                 chat_id, 
-                "👋 Welcome!\n\nClick the buttons below and watch the Ad to unlock your video:", 
+                "👋 Welcome!\n\nClick on a video below to generate your unique Ad link:", 
                 reply_markup=keyboard
             )
         else:
             bot.send_message(chat_id, "No videos found at the moment. Please try again later.")
         return
-        
-    video_id = text[1]
-    db, _ = get_db()
-    
-    if video_id in db:
-        media_data = db[video_id]
-        threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
+
+    # 2. යූසර් Key එකක් Paste කරලා යැව්වම
+    if text.startswith('/start '):
+        token = text.split()[1] # Backup if they use deep link
     else:
-        bot.send_message(chat_id, "❌ This link is invalid or has expired.")
+        token = text # User typed the manual key
+        
+    db, sha = get_db()
+    token_key = f"token_{token}"
+    
+    if token_key in db:
+        video_id = db[token_key]
+        media_data = db.get(video_id)
+        
+        if media_data:
+            threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
+            
+            # Token එක මකා දැමීම
+            del db[token_key]
+            save_db(db, sha)
+        else:
+            bot.send_message(chat_id, "❌ Error retrieving video data.")
+    else:
+        if not text.startswith('/'):
+            bot.send_message(chat_id, "❌ Invalid Key! The key is incorrect, expired, or has already been used.")
 
 print("Bot is running...")
 bot.polling(none_stop=True)
