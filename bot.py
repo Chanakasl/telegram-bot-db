@@ -8,8 +8,8 @@ import random
 import threading
 import time
 import re
-import yt_dlp
 import uuid
+import base64
 from github import Github
 
 # Railway Environment Variables
@@ -19,7 +19,7 @@ GITHUB_REPO_NAME = os.environ.get("GITHUB_REPO_NAME")
 SHORTENER_API = os.environ.get("SHORTENER_API")
 BOT_USERNAME = os.environ.get("BOT_USERNAME")
 BLOG_URL = os.environ.get("BLOG_URL")
-GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL")
+GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL") # උදා: https://user.github.io/repo/
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 github = Github(GITHUB_TOKEN)
@@ -60,10 +60,9 @@ def auto_delete_message(chat_id, message_id, delay=1800):
             pass
     threading.Thread(target=delay_delete).start()
 
-# --- අලුත් කොටස: හැම විනාඩි 3කට වරක් Expire වූ අය පරීක්ෂා කිරීම ---
 def session_cleanup_task():
     while True:
-        time.sleep(180) # තත්පර 180 (විනාඩි 3යි)
+        time.sleep(180) 
         try:
             db, sha = get_db()
             changes_made = False
@@ -78,11 +77,8 @@ def session_cleanup_task():
                         del db[key]
                         changes_made = True
             
-            # වෙනස්කම් තියෙනවා නම් පමණක් GitHub එකට සේව් කිරීම
             if changes_made:
                 save_db(db, sha)
-                
-                # Expire වූ අයට දැනුම් දීම
                 for chat_id in expired_users:
                     try:
                         bot.send_message(
@@ -94,9 +90,7 @@ def session_cleanup_task():
         except Exception as e:
             print(f"Cleanup Error: {e}")
 
-# Background Task එක ආරම්භ කිරීම
 threading.Thread(target=session_cleanup_task, daemon=True).start()
-# -----------------------------------------------------------------
 
 def get_blogger_videos_keyboard():
     feed_url = f"https://{BLOG_URL}/feeds/posts/default/-/Video?alt=json&max-results=50"
@@ -141,10 +135,6 @@ def get_blogger_videos_keyboard():
                         if v.get("video") == real_video_url and v.get("images") == images:
                             video_id = k
                             break
-                    elif isinstance(v, str): 
-                        if v == real_video_url and not images:
-                            video_id = k
-                            break
                 
                 if not video_id:
                     video_id = generate_id()
@@ -162,67 +152,44 @@ def get_blogger_videos_keyboard():
         print(f"Blogger Fetch Error: {e}")
         return None
 
+# අලුත් Media යවන Function එක (Video එක Download කරන්නේ නැත)
 def process_and_send_media(chat_id, media_data):
-    if isinstance(media_data, str):
-        images = []
-        video_url = media_data
-    else:
-        images = media_data.get("images", [])
-        video_url = media_data.get("video")
-
-    wait_msg = bot.send_message(chat_id, "⏳ Preparing your files. Please wait...")
+    images = media_data.get("images", [])
+    video_url = media_data.get("video")
     
+    # 1. Photos තියෙනවා නම් සාමාන්‍ය විදිහට යවනවා
     if images:
         try:
-            bot.edit_message_text("🖼️ Sending photos...", chat_id, wait_msg.message_id)
             media_group = [types.InputMediaPhoto(url) for url in images[:10]]
             sent_photos = bot.send_media_group(chat_id, media_group)
-            
             for p_msg in sent_photos:
                 auto_delete_message(chat_id, p_msg.message_id, delay=1800)
         except Exception as e:
             print(f"Photos Send Error: {e}")
 
+    # 2. Video එක තියෙනවා නම් අලුත් Player Link එක හදනවා
     if video_url:
-        try:
-            bot.edit_message_text("📥 Downloading video to the server. Please hold on (this might take a few minutes)...", chat_id, wait_msg.message_id)
-            bot.send_chat_action(chat_id, 'upload_video')
+        # Video URL එක Base64 වලින් Encrypt කිරීම
+        encoded_url = base64.b64encode(video_url.encode('utf-8')).decode('utf-8')
+        
+        # GitHub Pages URL එකේ අගට player.html සම්බන්ධ කිරීම
+        base_page_url = GITHUB_PAGES_URL.rstrip('/')
+        if base_page_url.endswith('index.html'):
+            base_page_url = base_page_url.replace('/index.html', '')
             
-            ydl_opts = {
-                'outtmpl': f'video_{chat_id}_%(id)s.%(ext)s',
-                'format': 'best',
-                'quiet': True,
-                'no_warnings': True
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=True)
-                filename = ydl.prepare_filename(info)
-                
-            caption_text = "✅ Thank you! Here is your requested video:\n\n⚠️ For security reasons, these files will be automatically deleted in 30 minutes!"
-            
-            bot.edit_message_text("📤 Uploading video to Telegram...", chat_id, wait_msg.message_id)
-            
-            with open(filename, 'rb') as video_file:
-                sent_msg = bot.send_video(chat_id, video=video_file, caption=caption_text, timeout=300)
-                
-            os.remove(filename)
-            auto_delete_message(chat_id, sent_msg.message_id, delay=1800)
-            
-        except Exception as e:
-            print(f"Video Processing Error: {e}")
-            fallback_msg = bot.send_message(
-                chat_id,
-                f"❌ An error occurred while downloading, or the video size is too large.\n\n🔗 Please watch it via the link below:\n{video_url}\n\n⚠️ This message will be deleted in 30 minutes."
-            )
-            auto_delete_message(chat_id, fallback_msg.message_id, delay=1800)
-    elif not images and not video_url:
-        bot.send_message(chat_id, "⚠️ No video or image was detected in this post.")
-
-    try:
-        bot.delete_message(chat_id, wait_msg.message_id)
-    except Exception:
-        pass
+        secure_player_link = f"{base_page_url}/player.html?src={encoded_url}"
+        
+        # Inline Button එකක් විදිහට Player Link එක යැවීම
+        markup = types.InlineKeyboardMarkup()
+        watch_btn = types.InlineKeyboardButton(text="🍿 Watch Video Now", url=secure_player_link)
+        markup.add(watch_btn)
+        
+        sent_msg = bot.send_message(
+            chat_id,
+            "✅ **Your Video is Ready!**\n\nClick the button below to watch it in our secure web player.",
+            reply_markup=markup
+        )
+        auto_delete_message(chat_id, sent_msg.message_id, delay=1800)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('getvid_'))
 def handle_video_request(call):
@@ -237,7 +204,7 @@ def handle_video_request(call):
         if time.time() < expire_time:
             media_data = db.get(video_id)
             if media_data:
-                bot.answer_callback_query(call.id, "✅ Unlocked! Sending video...")
+                bot.answer_callback_query(call.id, "✅ Unlocked! Generating player link...")
                 threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
                 return
         else:
@@ -249,7 +216,11 @@ def handle_video_request(call):
     db[f"token_{unique_token}"] = video_id
     save_db(db, sha)
     
-    key_page_url = f"{GITHUB_PAGES_URL}?key={unique_token}"
+    base_page_url = GITHUB_PAGES_URL.rstrip('/')
+    if base_page_url.endswith('index.html'):
+        base_page_url = base_page_url.replace('/index.html', '')
+        
+    key_page_url = f"{base_page_url}/index.html?key={unique_token}"
     short_url = create_short_link(key_page_url)
     
     bot.send_message(
@@ -283,12 +254,11 @@ def handle_text_and_start(message):
     if token_key in db:
         video_id = db[token_key]
         
-        # පැයකට (තත්පර 3600කට) අන්ලොක් කිරීම
         db[f"auth_{chat_id}"] = time.time() + 3600
         
         media_data = db.get(video_id)
         if media_data:
-            bot.send_message(chat_id, "🎉 **Success! The Bot is now unlocked for 1 HOUR.**\nYou can download any video directly without ads!")
+            bot.send_message(chat_id, "🎉 **Success! The Bot is now unlocked for 1 HOUR.**")
             threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
             
             del db[token_key]
