@@ -8,15 +8,15 @@ import random
 import threading
 import time
 import re
-import yt_dlp
 import uuid
+import base64
 from github import Github
 
 # Railway Environment Variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO_NAME = os.environ.get("GITHUB_REPO_NAME")
-SHORTENER_API = os.environ.get("SHORTENER_API") # අලුත් API Key එක Railway එකෙන් ගනී
+SHORTENER_API = os.environ.get("SHORTENER_API")
 BOT_USERNAME = os.environ.get("BOT_USERNAME")
 BLOG_URL = os.environ.get("BLOG_URL")
 VERCEL_URL = os.environ.get("VERCEL_URL") 
@@ -55,22 +55,19 @@ def get_db():
 def save_db(data, sha): 
     repo.update_file("database.json", "Update DB", json.dumps(data), sha)
 
-# --- ShrinkEarn API එකට යාවත්කාලීන කළ කොටස ---
 def create_short_link(long_url):
     api = f"https://shrinkearn.com/api?api={SHORTENER_API}&url={long_url}"
     try: 
         return requests.get(api).json().get('shortenedUrl', long_url)
     except Exception as e: 
-        print(f"Shortener Error: {e}")
         return long_url
 
-# --- Media Processing (Photos + Video Download & Send) ---
+# --- Media Processing (Photos + Send Player Link) ---
 def process_and_send_media(chat_id, media_data):
     images = media_data.get("images", [])
     video_url = media_data.get("video")
     
-    wait_msg = bot.send_message(chat_id, "⏳ ගොනු සූදානම් වෙමින් පවතී. කරුණාකර රැඳී සිටින්න...")
-    
+    # 1. Photos තියෙනවා නම් යවනවා
     if images:
         try:
             media_group = [types.InputMediaPhoto(url) for url in images[:10]]
@@ -78,25 +75,20 @@ def process_and_send_media(chat_id, media_data):
         except Exception as e:
             print(f"Photos Error: {e}")
 
+    # 2. Video Player Link එක හදලා යවනවා
     if video_url:
-        bot.send_chat_action(chat_id, 'upload_video')
-        try:
-            ydl_opts = {'outtmpl': f'video_{chat_id}_%(id)s.%(ext)s', 'format': 'best', 'quiet': True}
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=True)
-                filename = ydl.prepare_filename(info)
-            
-            with open(filename, 'rb') as f:
-                bot.send_video(chat_id, f, caption="✅ ස්තූතියි! මෙන්න ඔබගේ වීඩියෝව.")
-            
-            os.remove(filename)
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ වීඩියෝවේ ප්‍රමාණය විශාල බැවින් කෙලින්ම යැවීමට නොහැක. කරුණාකර පහත ලින්ක් එකෙන් නරඹන්න:\n\n🔗 {video_url}")
-            
-    try:
-        bot.delete_message(chat_id, wait_msg.message_id)
-    except Exception:
-        pass
+        encoded_url = base64.b64encode(video_url.encode('utf-8')).decode('utf-8')
+        base_url = VERCEL_URL.rstrip('/')
+        player_url = f"{base_url}/player.html?src={encoded_url}"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🍿 Watch Secure Player", url=player_url))
+
+        bot.send_message(
+            chat_id,
+            "✅ **Your Video is Ready!**\n\nClick the button below to watch it securely.",
+            reply_markup=markup
+        )
 
 def get_blogger_videos_keyboard():
     feed_url = f"https://{BLOG_URL}/feeds/posts/default/-/Video?alt=json&max-results=50"
@@ -125,7 +117,6 @@ def get_blogger_videos_keyboard():
             save_db(db, sha)
         return markup
     except Exception as e: 
-        print(f"Blogger Fetch Error: {e}")
         return None
 
 # --- Bot Commands & Callbacks ---
@@ -139,7 +130,7 @@ def handle_request(call):
     if db.get(f"auth_{chat_id}", 0) > time.time():
         media_data = db.get(vid_id)
         if media_data:
-            bot.answer_callback_query(call.id, "✅ Unlocked! Sending...")
+            bot.answer_callback_query(call.id, "✅ Unlocked! Generating Player...")
             threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
         return
 
@@ -149,7 +140,7 @@ def handle_request(call):
     save_db(db, sha)
     
     base_url = VERCEL_URL.rstrip('/')
-    short_url = create_short_link(f"{base_url}/?key={token}")
+    short_url = create_short_link(f"{base_url}/index.html?key={token}")
     
     bot.send_message(
         chat_id, 
