@@ -19,7 +19,7 @@ GITHUB_REPO_NAME = os.environ.get("GITHUB_REPO_NAME")
 SHORTENER_API = os.environ.get("SHORTENER_API")
 BOT_USERNAME = os.environ.get("BOT_USERNAME")
 BLOG_URL = os.environ.get("BLOG_URL")
-GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL") # අලුත් වෙබ් අඩවියේ ලින්ක් එක
+GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 github = Github(GITHUB_TOKEN)
@@ -59,6 +59,44 @@ def auto_delete_message(chat_id, message_id, delay=1800):
         except Exception:
             pass
     threading.Thread(target=delay_delete).start()
+
+# --- අලුත් කොටස: හැම විනාඩි 3කට වරක් Expire වූ අය පරීක්ෂා කිරීම ---
+def session_cleanup_task():
+    while True:
+        time.sleep(180) # තත්පර 180 (විනාඩි 3යි)
+        try:
+            db, sha = get_db()
+            changes_made = False
+            expired_users = []
+            
+            for key in list(db.keys()):
+                if key.startswith("auth_"):
+                    expire_time = db[key]
+                    if time.time() > expire_time:
+                        chat_id = key.split("_")[1]
+                        expired_users.append(chat_id)
+                        del db[key]
+                        changes_made = True
+            
+            # වෙනස්කම් තියෙනවා නම් පමණක් GitHub එකට සේව් කිරීම
+            if changes_made:
+                save_db(db, sha)
+                
+                # Expire වූ අයට දැනුම් දීම
+                for chat_id in expired_users:
+                    try:
+                        bot.send_message(
+                            chat_id, 
+                            "⏱️ **Your 1-hour VIP session has ended!**\n\nYou will need to watch an Ad again to unlock the next video."
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"Cleanup Error: {e}")
+
+# Background Task එක ආරම්භ කිරීම
+threading.Thread(target=session_cleanup_task, daemon=True).start()
+# -----------------------------------------------------------------
 
 def get_blogger_videos_keyboard():
     feed_url = f"https://{BLOG_URL}/feeds/posts/default/-/Video?alt=json&max-results=50"
@@ -193,24 +231,20 @@ def handle_video_request(call):
     
     db, sha = get_db()
     
-    # 1. යූසර් දැනටමත් අන්ලොක් වෙලාද කියලා බලනවා
     auth_key = f"auth_{chat_id}"
     if auth_key in db:
         expire_time = db[auth_key]
         if time.time() < expire_time:
-            # පැය ඉවර වෙලා නැත්නම්, කෙලින්ම වීඩියෝ එක දෙනවා!
             media_data = db.get(video_id)
             if media_data:
                 bot.answer_callback_query(call.id, "✅ Unlocked! Sending video...")
                 threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
                 return
         else:
-            # පැය ඉවර නම් පරණ රෙකෝඩ් එක මකනවා
             del db[auth_key]
             save_db(db, sha)
-            db, sha = get_db() # Database එක අලුත් කරගන්නවා
+            db, sha = get_db()
 
-    # 2. අන්ලොක් වෙලා නැත්නම් විතරක් අලුත් Key එකක් දෙනවා
     unique_token = str(uuid.uuid4().hex)[:10]
     db[f"token_{unique_token}"] = video_id
     save_db(db, sha)
@@ -249,7 +283,7 @@ def handle_text_and_start(message):
     if token_key in db:
         video_id = db[token_key]
         
-        # 3. හරි Key එකක් දුන්නම, යූසර්ව පැයකට (තත්පර 3600 කට) අන්ලොක් කරනවා!
+        # පැයකට (තත්පර 3600කට) අන්ලොක් කිරීම
         db[f"auth_{chat_id}"] = time.time() + 3600
         
         media_data = db.get(video_id)
@@ -257,7 +291,6 @@ def handle_text_and_start(message):
             bot.send_message(chat_id, "🎉 **Success! The Bot is now unlocked for 1 HOUR.**\nYou can download any video directly without ads!")
             threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
             
-            # පාවිච්චි කරපු Key එක මකලා දානවා වෙන අයට ගන්න බැරි වෙන්න
             del db[token_key]
             save_db(db, sha)
         else:
