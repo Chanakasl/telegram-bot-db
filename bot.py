@@ -59,10 +59,10 @@ def create_short_link(long_url):
     api = f"https://shrinkearn.com/api?api={SHORTENER_API}&url={long_url}"
     try: 
         return requests.get(api).json().get('shortenedUrl', long_url)
-    except Exception as e: 
+    except Exception: 
         return long_url
 
-# --- Media Processing (Photos + Send Player Link) ---
+# --- Media Processing (Photos + Send Time-Limited Player Link) ---
 def process_and_send_media(chat_id, media_data):
     images = media_data.get("images", [])
     video_url = media_data.get("video")
@@ -75,18 +75,27 @@ def process_and_send_media(chat_id, media_data):
         except Exception as e:
             print(f"Photos Error: {e}")
 
-    # 2. Video Player Link එක හදලා යවනවා
+    # 2. Time-Limited Video Player Link එක හදලා යවනවා
     if video_url:
-        encoded_url = base64.b64encode(video_url.encode('utf-8')).decode('utf-8')
+        # ලින්ක් එක හැදුණු වෙලාවේ සිට පැය 1කින් (තත්පර 3600කින්) Expire වීමට සැකසීම
+        expire_timestamp = int(time.time()) + 3600 
+        
+        # වීඩියෝ ලින්ක් එක සහ Expire වෙන වෙලාව ':::' මඟින් වෙන් කර එකතු කිරීම
+        raw_data = f"{video_url}:::{expire_timestamp}"
+        
+        # දත්තයන් Base64 වලින් Encrypt කිරීම
+        encoded_data = base64.b64encode(raw_data.encode('utf-8')).decode('utf-8')
+        
         base_url = VERCEL_URL.rstrip('/')
-        player_url = f"{base_url}/player.html?src={encoded_url}"
+        # 'data=' parameter එක හරහා ආරක්ෂිතව Vercel Player එකට යැවීම
+        player_url = f"{base_url}/player.html?data={encoded_data}"
 
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🍿 Watch Secure Player", url=player_url))
 
         bot.send_message(
             chat_id,
-            "✅ **Your Video is Ready!**\n\nClick the button below to watch it securely.",
+            "✅ **Your Video is Ready!**\n\nClick the button below to watch it securely.\n⚠️ *(This player link will automatically expire in 1 hour)*",
             reply_markup=markup
         )
 
@@ -116,7 +125,7 @@ def get_blogger_videos_keyboard():
         if db_changed: 
             save_db(db, sha)
         return markup
-    except Exception as e: 
+    except Exception: 
         return None
 
 # --- Bot Commands & Callbacks ---
@@ -126,7 +135,7 @@ def handle_request(call):
     chat_id = call.message.chat.id
     db, sha = get_db()
     
-    # 1 Hour VIP check
+    # 1 Hour VIP session check
     if db.get(f"auth_{chat_id}", 0) > time.time():
         media_data = db.get(vid_id)
         if media_data:
@@ -175,7 +184,7 @@ def handle_text(message):
     if token_key in db:
         vid_id = db[token_key]
         
-        # Grant 1 Hour Access
+        # Grant 1 Hour Access to Bot Menu
         db[f"auth_{chat_id}"] = time.time() + 3600
         
         media_data = db.get(vid_id)
