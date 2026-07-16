@@ -25,25 +25,6 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 github = Github(GITHUB_TOKEN)
 repo = github.get_repo(GITHUB_REPO_NAME)
 
-# --- Background Task (Session Cleanup) ---
-def session_cleanup_task():
-    while True:
-        time.sleep(180)
-        try:
-            db, sha = get_db()
-            changes_made = False
-            for key in list(db.keys()):
-                if key.startswith("auth_"):
-                    if time.time() > db[key]:
-                        del db[key]
-                        changes_made = True
-            if changes_made: 
-                save_db(db, sha)
-        except Exception: 
-            pass
-
-threading.Thread(target=session_cleanup_task, daemon=True).start()
-
 # --- Helper Functions ---
 def get_db():
     try:
@@ -62,12 +43,75 @@ def create_short_link(long_url):
     except Exception: 
         return long_url
 
-# --- Media Processing (Photos + Send Time-Limited Player Link) ---
+# --- Background Task 1: Session Cleanup ---
+def session_cleanup_task():
+    while True:
+        time.sleep(180)
+        try:
+            db, sha = get_db()
+            changes_made = False
+            for key in list(db.keys()):
+                if key.startswith("auth_"):
+                    if time.time() > db[key]:
+                        del db[key]
+                        changes_made = True
+            if changes_made: 
+                save_db(db, sha)
+        except Exception: 
+            pass
+
+# --- Background Task 2: Auto-Broadcast New Posts ---
+def check_new_posts_task():
+    while True:
+        try:
+            feed_url = f"https://{BLOG_URL}/feeds/posts/default/-/Video?alt=json&max-results=1"
+            data = requests.get(feed_url).json()
+            entries = data.get('feed', {}).get('entry', [])
+            
+            if entries:
+                latest_post = entries[0]
+                post_id = latest_post.get('id', {}).get('$t')
+                title = latest_post.get('title', {}).get('$t', 'New Video')
+                
+                db, sha = get_db()
+                saved_last_id = db.get("last_post_id")
+                
+                # අලුත් පෝස්ට් එකක් දාලා කියලා තහවුරු වුණොත්
+                if saved_last_id != post_id:
+                    db["last_post_id"] = post_id
+                    users = db.get("users", [])
+                    save_db(db, sha) # අලුත් ID එක Save කරනවා
+                    
+                    # පළවෙනි පාරට Bot රන් වෙද්දී මැසේජ් යන එක නවත්වන්න (සැබෑ අලුත් පෝස්ට් වලට පමණක් යවන්න)
+                    if saved_last_id is not None:
+                        markup = types.InlineKeyboardMarkup()
+                        # කෙලින්ම බොට්ගේ මෙනු එකට එන බටන් එකක් දානවා
+                        markup.add(types.InlineKeyboardButton("🚀 දැන්ම බලන්න", url=f"https://t.me/{BOT_USERNAME}?start=menu"))
+                        
+                        message_text = f"🔥 **අලුත් වීඩියෝ එකක් ඇවිත් තියෙන්නේ!**\n\n🎬 {title}\n\nපහළ බටන් එක ඔබලා දැන්ම බලන්න 👇"
+                        
+                        # හැම යූසර්ටම මැසේජ් එක යැවීම
+                        for user_id in users:
+                            try:
+                                bot.send_message(user_id, message_text, reply_markup=markup)
+                                time.sleep(0.5) # Telegram Limit එක පනින්නේ නැති වෙන්න පොඩි පරතරයක් තියනවා
+                            except Exception:
+                                pass # යූසර් බොට්ව බ්ලොක් කරලා නම් Error එක නොසලකා හරිනවා
+                                
+        except Exception as e:
+            print(f"Broadcast Error: {e}")
+            
+        time.sleep(600) # විනාඩි 10කට සැරයක් බ්ලොග් එක චෙක් කරයි (600s)
+
+# Start Background Tasks
+threading.Thread(target=session_cleanup_task, daemon=True).start()
+threading.Thread(target=check_new_posts_task, daemon=True).start()
+
+# --- Media Processing ---
 def process_and_send_media(chat_id, media_data):
     images = media_data.get("images", [])
     video_url = media_data.get("video")
     
-    # 1. Photos තියෙනවා නම් යවනවා
     if images:
         try:
             media_group = [types.InputMediaPhoto(url) for url in images[:10]]
@@ -75,19 +119,12 @@ def process_and_send_media(chat_id, media_data):
         except Exception as e:
             print(f"Photos Error: {e}")
 
-    # 2. Time-Limited Video Player Link එක හදලා යවනවා
     if video_url:
-        # ලින්ක් එක හැදුණු වෙලාවේ සිට පැය 1කින් (තත්පර 3600කින්) Expire වීමට සැකසීම
         expire_timestamp = int(time.time()) + 3600 
-        
-        # වීඩියෝ ලින්ක් එක සහ Expire වෙන වෙලාව ':::' මඟින් වෙන් කර එකතු කිරීම
         raw_data = f"{video_url}:::{expire_timestamp}"
-        
-        # දත්තයන් Base64 වලින් Encrypt කිරීම
         encoded_data = base64.b64encode(raw_data.encode('utf-8')).decode('utf-8')
         
         base_url = VERCEL_URL.rstrip('/')
-        # 'data=' parameter එක හරහා ආරක්ෂිතව Vercel Player එකට යැවීම
         player_url = f"{base_url}/player.html?data={encoded_data}"
 
         markup = types.InlineKeyboardMarkup()
@@ -135,7 +172,6 @@ def handle_request(call):
     chat_id = call.message.chat.id
     db, sha = get_db()
     
-    # 1 Hour VIP session check
     if db.get(f"auth_{chat_id}", 0) > time.time():
         media_data = db.get(vid_id)
         if media_data:
@@ -143,7 +179,6 @@ def handle_request(call):
             threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
         return
 
-    # Generate Token and Send Link
     token = str(uuid.uuid4().hex)[:10]
     db[f"token_{token}"] = vid_id
     save_db(db, sha)
@@ -161,8 +196,17 @@ def handle_request(call):
 def handle_text(message):
     text = message.text.strip()
     chat_id = message.chat.id
+    db, sha = get_db()
     
-    if text == '/start':
+    # යූසර්ව අපේ Database එකට (Users ලිස්ට් එකට) සේව් කරගන්නවා Auto-Broadcast එකට
+    if "users" not in db:
+        db["users"] = []
+    if chat_id not in db["users"]:
+        db["users"].append(chat_id)
+        save_db(db, sha)
+        db, sha = get_db() # Save කළාට පස්සේ ආයෙත් DB එක Load කරනවා
+    
+    if text == '/start' or text == '/start menu':
         bot.send_chat_action(chat_id, 'typing')
         markup = get_blogger_videos_keyboard()
         if markup:
@@ -170,9 +214,6 @@ def handle_text(message):
         else:
             bot.send_message(chat_id, "No videos found. Please try again later.")
         return
-    
-    # Key Verification
-    db, sha = get_db()
     
     if text.startswith('/start '):
         token = text.split()[1]
@@ -183,16 +224,11 @@ def handle_text(message):
     
     if token_key in db:
         vid_id = db[token_key]
-        
-        # Grant 1 Hour Access to Bot Menu
         db[f"auth_{chat_id}"] = time.time() + 3600
-        
         media_data = db.get(vid_id)
         if media_data:
             bot.send_message(chat_id, "🎉 **Success! The Bot is now unlocked for 1 HOUR.**")
             threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
-            
-            # Delete token
             del db[token_key]
             save_db(db, sha)
         else:
@@ -201,5 +237,5 @@ def handle_text(message):
         if not text.startswith('/'):
             bot.send_message(chat_id, "❌ Invalid Key! The key is incorrect, expired, or has already been used.")
 
-print("Bot is running...")
+print("Bot is running with Auto-Broadcast...")
 bot.polling(none_stop=True)
