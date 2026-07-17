@@ -215,34 +215,43 @@ def handle_text(message):
     chat_id = message.chat.id
     db, sha = get_db()
     
-    # 1. යූසර් ලියාපදිංචිය සහ Referral ක්‍රමය හැසිරවීම
+    # 1. යූසර් ලියාපදිංචිය
     if "users" not in db:
         db["users"] = []
-    
-    is_new_user = chat_id not in db["users"]
-    
-    if is_new_user:
+    if chat_id not in db["users"]:
         db["users"].append(chat_id)
-        
-        # කෙනෙක් Referral ලින්ක් එකකින් ආවොත්, ඒ එවපු කෙනාට පැය 24ක VIP දීම
-        if text.startswith('/start ref_'):
-            try:
-                referrer_id = int(text.split('_')[1])
-                if referrer_id != chat_id:
-                    current_auth = db.get(f"auth_{referrer_id}", time.time())
-                    # පැය 24 (තත්පර 86400) VIP කාලයක් ලබා දීම
-                    db[f"auth_{referrer_id}"] = max(current_auth, time.time()) + 86400
-                    try:
-                        bot.send_message(referrer_id, "🎉 **සුබ පැතුම්!**\nඔබේ යොමු කිරීමේ ලින්ක් එකෙන් නව සාමාජිකයෙක් එකතු වූ නිසා ඔබට **පැය 24ක අමතර VIP Access** එකක් ලැබුණා!")
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-                
         save_db(db, sha)
-        db, sha = get_db() # Save කළ පසු යළිත් Database එක පූරණය කිරීම
+        db, sha = get_db()
         
-    # 2. Force Subscribe පරීක්ෂා කිරීම
+    # 2. Referral ක්‍රමය හැසිරවීම (වඩාත් නිවැරදි ක්‍රමය)
+    if "used_refs" not in db:
+        db["used_refs"] = []
+        
+    if text.startswith('/start ref_'):
+        try:
+            referrer_id = int(text.split('_')[1])
+            # තමන්ගෙම ලින්ක් එක ක්ලික් කිරීම වළක්වා, කලින් රෙෆරල් පාවිච්චි කර ඇතිදැයි බැලීම
+            if referrer_id != chat_id and chat_id not in db["used_refs"]:
+                db["used_refs"].append(chat_id) # මේ යූසර්ව රෙෆරල් ලිස්ට් එකට දානවා
+                
+                # Refer කළ කෙනාට පැය 24 (තත්පර 86400) දීම
+                current_auth = db.get(f"auth_{referrer_id}", time.time())
+                if current_auth < time.time():
+                    current_auth = time.time()
+                db[f"auth_{referrer_id}"] = current_auth + 86400
+                
+                save_db(db, sha)
+                db, sha = get_db()
+                
+                # Refer කළ කෙනාට මැසේජ් එක යැවීම
+                try:
+                    bot.send_message(referrer_id, "🎉 **සුබ පැතුම්!**\nඔබේ යොමු කිරීමේ ලින්ක් එකෙන් සාමාජිකයෙක් එකතු වූ නිසා ඔබට **පැය 24ක අමතර VIP Access** එකක් ලැබුණා!")
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"Ref Error: {e}")
+
+    # 3. Force Subscribe පරීක්ෂා කිරීම
     if not check_sub(chat_id):
         channel_link = CHANNEL_USERNAME.replace('@', '')
         markup = types.InlineKeyboardMarkup()
@@ -256,7 +265,7 @@ def handle_text(message):
         )
         return
 
-    # 3. ප්‍රධාන විධාන (Commands)
+    # 4. ප්‍රධාන විධාන (Commands)
     if text == '/start' or text.startswith('/start ref_') or text == '/start menu':
         bot.send_chat_action(chat_id, 'typing')
         markup = get_blogger_videos_keyboard()
@@ -279,7 +288,7 @@ def handle_text(message):
         )
         return
     
-    # 4. Token Verification 
+    # 5. Token Verification 
     if text.startswith('/start '):
         token = text.split()[1]
     else:
@@ -302,6 +311,3 @@ def handle_text(message):
     else:
         if not text.startswith('/'):
             bot.send_message(chat_id, "❌ Invalid Key! The key is incorrect, expired, or has already been used.")
-
-print("Bot is running with Referral and Force Subscribe...")
-bot.polling(none_stop=True)
