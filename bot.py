@@ -20,6 +20,7 @@ SHORTENER_API = os.environ.get("SHORTENER_API")
 BOT_USERNAME = os.environ.get("BOT_USERNAME")
 BLOG_URL = os.environ.get("BLOG_URL")
 VERCEL_URL = os.environ.get("VERCEL_URL") 
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME") # අලුතින් එකතු කළ චැනල් යූසර්නේම් එක
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 github = Github(GITHUB_TOKEN)
@@ -42,6 +43,16 @@ def create_short_link(long_url):
         return requests.get(api).json().get('shortenedUrl', long_url)
     except Exception: 
         return long_url
+
+# Force Subscribe Check Function
+def check_sub(user_id):
+    if not CHANNEL_USERNAME: 
+        return True # චැනල් එකක් දීලා නැත්නම් අනිවාර්ය කරන්නේ නෑ
+    try:
+        status = bot.get_chat_member(CHANNEL_USERNAME, user_id).status
+        return status in ['creator', 'administrator', 'member']
+    except Exception:
+        return False
 
 # --- Background Task 1: Session Cleanup ---
 def session_cleanup_task():
@@ -76,34 +87,28 @@ def check_new_posts_task():
                 db, sha = get_db()
                 saved_last_id = db.get("last_post_id")
                 
-                # අලුත් පෝස්ට් එකක් දාලා කියලා තහවුරු වුණොත්
                 if saved_last_id != post_id:
                     db["last_post_id"] = post_id
                     users = db.get("users", [])
-                    save_db(db, sha) # අලුත් ID එක Save කරනවා
+                    save_db(db, sha) 
                     
-                    # පළවෙනි පාරට Bot රන් වෙද්දී මැසේජ් යන එක නවත්වන්න (සැබෑ අලුත් පෝස්ට් වලට පමණක් යවන්න)
                     if saved_last_id is not None:
                         markup = types.InlineKeyboardMarkup()
-                        # කෙලින්ම බොට්ගේ මෙනු එකට එන බටන් එකක් දානවා
                         markup.add(types.InlineKeyboardButton("🚀 දැන්ම බලන්න", url=f"https://t.me/{BOT_USERNAME}?start=menu"))
-                        
                         message_text = f"🔥 **අලුත් වීඩියෝ එකක් ඇවිත් තියෙන්නේ!**\n\n🎬 {title}\n\nපහළ බටන් එක ඔබලා දැන්ම බලන්න 👇"
                         
-                        # හැම යූසර්ටම මැසේජ් එක යැවීම
                         for user_id in users:
                             try:
                                 bot.send_message(user_id, message_text, reply_markup=markup)
-                                time.sleep(0.5) # Telegram Limit එක පනින්නේ නැති වෙන්න පොඩි පරතරයක් තියනවා
+                                time.sleep(0.5) 
                             except Exception:
-                                pass # යූසර් බොට්ව බ්ලොක් කරලා නම් Error එක නොසලකා හරිනවා
+                                pass 
                                 
         except Exception as e:
             print(f"Broadcast Error: {e}")
             
-        time.sleep(600) # විනාඩි 10කට සැරයක් බ්ලොග් එක චෙක් කරයි (600s)
+        time.sleep(30)
 
-# Start Background Tasks
 threading.Thread(target=session_cleanup_task, daemon=True).start()
 threading.Thread(target=check_new_posts_task, daemon=True).start()
 
@@ -166,6 +171,18 @@ def get_blogger_videos_keyboard():
         return None
 
 # --- Bot Commands & Callbacks ---
+@bot.callback_query_handler(func=lambda call: call.data == 'check_sub')
+def handle_check_sub(call):
+    chat_id = call.message.chat.id
+    if check_sub(chat_id):
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        bot.send_message(chat_id, "✅ **ස්තූතියි! ඔබ සාර්ථකව චැනල් එකට සම්බන්ධ වී ඇත.**\n\nවීඩියෝ නැරඹීමට /start ලෙස type කරන්න.")
+    else:
+        bot.answer_callback_query(call.id, "❌ ඔබ තවමත් චැනල් එකට සම්බන්ධ වී නොමැත! කරුණාකර Join වී නැවත උත්සාහ කරන්න.", show_alert=True)
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('getvid_'))
 def handle_request(call):
     vid_id = call.data.split('_')[1]
@@ -198,23 +215,71 @@ def handle_text(message):
     chat_id = message.chat.id
     db, sha = get_db()
     
-    # යූසර්ව අපේ Database එකට (Users ලිස්ට් එකට) සේව් කරගන්නවා Auto-Broadcast එකට
+    # 1. යූසර් ලියාපදිංචිය සහ Referral ක්‍රමය හැසිරවීම
     if "users" not in db:
         db["users"] = []
-    if chat_id not in db["users"]:
-        db["users"].append(chat_id)
-        save_db(db, sha)
-        db, sha = get_db() # Save කළාට පස්සේ ආයෙත් DB එක Load කරනවා
     
-    if text == '/start' or text == '/start menu':
+    is_new_user = chat_id not in db["users"]
+    
+    if is_new_user:
+        db["users"].append(chat_id)
+        
+        # කෙනෙක් Referral ලින්ක් එකකින් ආවොත්, ඒ එවපු කෙනාට පැය 24ක VIP දීම
+        if text.startswith('/start ref_'):
+            try:
+                referrer_id = int(text.split('_')[1])
+                if referrer_id != chat_id:
+                    current_auth = db.get(f"auth_{referrer_id}", time.time())
+                    # පැය 24 (තත්පර 86400) VIP කාලයක් ලබා දීම
+                    db[f"auth_{referrer_id}"] = max(current_auth, time.time()) + 86400
+                    try:
+                        bot.send_message(referrer_id, "🎉 **සුබ පැතුම්!**\nඔබේ යොමු කිරීමේ ලින්ක් එකෙන් නව සාමාජිකයෙක් එකතු වූ නිසා ඔබට **පැය 24ක අමතර VIP Access** එකක් ලැබුණා!")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+                
+        save_db(db, sha)
+        db, sha = get_db() # Save කළ පසු යළිත් Database එක පූරණය කිරීම
+        
+    # 2. Force Subscribe පරීක්ෂා කිරීම
+    if not check_sub(chat_id):
+        channel_link = CHANNEL_USERNAME.replace('@', '')
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_link}"))
+        markup.add(types.InlineKeyboardButton("✅ Check Subscription", callback_data="check_sub"))
+        
+        bot.send_message(
+            chat_id, 
+            "⚠️ **බොට් භාවිතා කිරීමට ප්‍රථමයෙන් අපගේ චැනල් එකට සම්බන්ධ වී සිටිය යුතුය!**\n\nපහත බටන් එක ඔබලා Join වෙලා, ඉන්පසු 'Check Subscription' ඔබන්න.", 
+            reply_markup=markup
+        )
+        return
+
+    # 3. ප්‍රධාන විධාන (Commands)
+    if text == '/start' or text.startswith('/start ref_') or text == '/start menu':
         bot.send_chat_action(chat_id, 'typing')
         markup = get_blogger_videos_keyboard()
         if markup:
-            bot.send_message(chat_id, "👋 Welcome!\n\nSelect a video below to generate your unique Ad link:", reply_markup=markup)
+            bot.send_message(
+                chat_id, 
+                "👋 Welcome!\n\nSelect a video below to generate your unique Ad link:\n\n*(යාළුවන්ට Invite කරලා පැය 24ක අඛණ්ඩ VIP සේවාවක් ලබා ගැනීමට /refer ලෙස type කරන්න)*", 
+                reply_markup=markup
+            )
         else:
             bot.send_message(chat_id, "No videos found. Please try again later.")
         return
+        
+    # Referral ලින්ක් එක ලබාගැනීම සඳහා /refer විධානය
+    if text == '/refer':
+        ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{chat_id}"
+        bot.send_message(
+            chat_id, 
+            f"🎁 **ඔබේ Referral Link එක:**\n\n`{ref_link}`\n\nමේ ලින්ක් එකෙන් යාළුවෙක්ව බොට් වෙත ගෙන ආවොත්, ඔබට **පැය 24ක VIP Access එකක්** සම්පූර්ණයෙන්ම නොමිලේ ලැබෙනවා! (Ads බලන්න ඕන නෑ)"
+        )
+        return
     
+    # 4. Token Verification 
     if text.startswith('/start '):
         token = text.split()[1]
     else:
@@ -226,6 +291,7 @@ def handle_text(message):
         vid_id = db[token_key]
         db[f"auth_{chat_id}"] = time.time() + 3600
         media_data = db.get(vid_id)
+        
         if media_data:
             bot.send_message(chat_id, "🎉 **Success! The Bot is now unlocked for 1 HOUR.**")
             threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
@@ -237,5 +303,5 @@ def handle_text(message):
         if not text.startswith('/'):
             bot.send_message(chat_id, "❌ Invalid Key! The key is incorrect, expired, or has already been used.")
 
-print("Bot is running with Auto-Broadcast...")
+print("Bot is running with Referral and Force Subscribe...")
 bot.polling(none_stop=True)
