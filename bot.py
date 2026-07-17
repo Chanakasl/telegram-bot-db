@@ -24,6 +24,7 @@ CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
+# GitHub Authentication
 auth = Auth.Token(GITHUB_TOKEN)
 github = Github(auth=auth)
 repo = github.get_repo(GITHUB_REPO_NAME)
@@ -216,6 +217,7 @@ def handle_text(message):
     chat_id = message.chat.id
     db, sha = get_db()
     
+    # 1. User Registration
     if "users" not in db:
         db["users"] = []
     if chat_id not in db["users"]:
@@ -223,6 +225,7 @@ def handle_text(message):
         save_db(db, sha)
         db, sha = get_db()
         
+    # 2. Referral Logic
     if "used_refs" not in db:
         db["used_refs"] = []
         
@@ -247,6 +250,7 @@ def handle_text(message):
         except Exception as e:
             print(f"Ref Error: {e}")
 
+    # 3. Force Subscribe Check
     if not check_sub(chat_id):
         channel_link = CHANNEL_USERNAME.replace('@', '') if CHANNEL_USERNAME else ""
         markup = types.InlineKeyboardMarkup()
@@ -261,6 +265,7 @@ def handle_text(message):
         )
         return
 
+    # 4. Commands
     if text == '/start' or text.startswith('/start ref_') or text == '/start menu':
         bot.send_chat_action(chat_id, 'typing')
         markup = get_blogger_videos_keyboard()
@@ -274,14 +279,20 @@ def handle_text(message):
             bot.send_message(chat_id, "No videos found. Please try again later.")
         return
         
+    # Referral Command with URL Shortener
     if text == '/refer':
-        ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{chat_id}"
+        bot.send_chat_action(chat_id, 'typing')
+        
+        long_ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{chat_id}"
+        short_ref_link = create_short_link(long_ref_link)
+        
         bot.send_message(
             chat_id, 
-            f"🎁 **Your Referral Link:**\n\n`{ref_link}`\n\nIf you bring a friend to the bot using this link, you will get **24 hours of VIP Access** completely free! (No need to watch Ads)"
+            f"🎁 **Your Referral Link:**\n\n👉 `{short_ref_link}`\n\nShare this link with your friends. When they click it and start the bot, you will get **24 hours of VIP Access** completely free!"
         )
         return
     
+    # 5. Token Verification 
     if text.startswith('/start '):
         token = text.split()[1]
     else:
