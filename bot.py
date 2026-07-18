@@ -29,6 +29,8 @@ auth = Auth.Token(GITHUB_TOKEN)
 github = Github(auth=auth)
 repo = github.get_repo(GITHUB_REPO_NAME)
 
+pending_users = {} # අලුත් යූසර්ස්ලාගේ මූලික කමාන්ඩ් එක තාවකාලිකව රඳවා තබා ගැනීමේ ලැයිස්තුව
+
 # --- Helper Functions ---
 def get_db():
     try:
@@ -55,6 +57,32 @@ def check_sub(user_id):
         return status in ['creator', 'administrator', 'member']
     except Exception:
         return False
+
+# --- Anti-Bot CAPTCHA Function ---
+def send_captcha(chat_id):
+    num1 = random.randint(1, 10)
+    num2 = random.randint(1, 10)
+    ans = num1 + num2
+    options = {ans}
+    
+    # වැරදි පිළිතුරු 3ක් හැදීම
+    while len(options) < 4:
+        options.add(random.randint(1, 20))
+    options = list(options)
+    random.shuffle(options)
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    for opt in options:
+        cb_data = "captcha_correct" if opt == ans else "captcha_wrong"
+        buttons.append(types.InlineKeyboardButton(str(opt), callback_data=cb_data))
+    markup.add(*buttons)
+    
+    bot.send_message(
+        chat_id, 
+        f"🛡️ **Anti-Bot Verification**\n\nTo prove you are a human, please select the correct answer for the following math problem:\n\n**{num1} + {num2} = ?**", 
+        reply_markup=markup
+    )
 
 # --- Background Task 1: Session Cleanup ---
 def session_cleanup_task():
@@ -172,7 +200,129 @@ def get_blogger_videos_keyboard():
     except Exception: 
         return None
 
-# --- Bot Commands & Callbacks ---
+# --- Main Logic Function ---
+def process_user_command(chat_id, text, db, sha):
+    # 1. Referral Logic
+    if "used_refs" not in db:
+        db["used_refs"] = []
+        
+    if text.startswith('/start ref_'):
+        try:
+            referrer_id = int(text.split('_')[1])
+            if referrer_id != chat_id and chat_id not in db["used_refs"]:
+                db["used_refs"].append(chat_id) 
+                
+                current_auth = db.get(f"auth_{referrer_id}", time.time())
+                if current_auth < time.time():
+                    current_auth = time.time()
+                db[f"auth_{referrer_id}"] = current_auth + 86400
+                
+                save_db(db, sha)
+                db, sha = get_db()
+                
+                try:
+                    bot.send_message(referrer_id, "🎉 **Congratulations!**\nA new member joined using your referral link, so you have received an **additional 24 hours of VIP Access!**")
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"Ref Error: {e}")
+
+    # 2. Force Subscribe Check
+    if not check_sub(chat_id):
+        channel_link = CHANNEL_USERNAME.replace('@', '') if CHANNEL_USERNAME else ""
+        markup = types.InlineKeyboardMarkup()
+        if channel_link:
+            markup.add(types.InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_link}"))
+        markup.add(types.InlineKeyboardButton("✅ Check Subscription", callback_data="check_sub"))
+        
+        bot.send_message(
+            chat_id, 
+            "⚠️ **You must join our channel before using the bot!**\n\nClick the button below to join, then click 'Check Subscription'.", 
+            reply_markup=markup
+        )
+        return
+
+    # 3. Commands
+    if text == '/start' or text.startswith('/start ref_') or text == '/start menu':
+        bot.send_chat_action(chat_id, 'typing')
+        markup = get_blogger_videos_keyboard()
+        if markup:
+            bot.send_message(
+                chat_id, 
+                "👋 Welcome!\n\nSelect a video below to generate your unique Ad link:\n\n*(Type /refer to invite friends and get 24 hours of uninterrupted VIP access)*", 
+                reply_markup=markup
+            )
+        else:
+            bot.send_message(chat_id, "No videos found. Please try again later.")
+        return
+        
+    if text == '/refer':
+        bot.send_chat_action(chat_id, 'typing')
+        long_ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{chat_id}"
+        short_ref_link = create_short_link(long_ref_link)
+        bot.send_message(
+            chat_id, 
+            f"🎁 **Your Referral Link:**\n\n👉 `{short_ref_link}`\n\nShare this link with your friends. When they click it and start the bot, you will get **24 hours of VIP Access** completely free!"
+        )
+        return
+    
+    # 4. Token Verification 
+    if text.startswith('/start '):
+        token = text.split()[1]
+    else:
+        token = text
+        
+    token_key = f"token_{token}"
+    
+    if token_key in db:
+        vid_id = db[token_key]
+        db[f"auth_{chat_id}"] = time.time() + 3600
+        media_data = db.get(vid_id)
+        
+        if media_data:
+            bot.send_message(chat_id, "🎉 **Success! The Bot is now unlocked for 1 HOUR.**")
+            threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
+            del db[token_key]
+            save_db(db, sha)
+        else:
+            bot.send_message(chat_id, "❌ Error retrieving video data.")
+    else:
+        if not text.startswith('/'):
+            bot.send_message(chat_id, "❌ Invalid Key! The key is incorrect, expired, or has already been used.")
+
+# --- Bot Callbacks & Message Handlers ---
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('captcha_'))
+def handle_captcha(call):
+    chat_id = call.message.chat.id
+    if call.data == "captcha_correct":
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        bot.answer_callback_query(call.id, "✅ Verification Successful!")
+        
+        # යූසර්ව Database එකට ඇතුලත් කිරීම
+        db, sha = get_db()
+        if "users" not in db:
+            db["users"] = []
+        if chat_id not in db["users"]:
+            db["users"].append(chat_id)
+            save_db(db, sha)
+            db, sha = get_db()
+            
+        # යූසර් මුලින්ම එවපු විධානය (උදා: referral ලින්ක් එක) නැවත ක්‍රියාත්මක කිරීම
+        original_cmd = pending_users.pop(chat_id, '/start')
+        process_user_command(chat_id, original_cmd, db, sha)
+        
+    else:
+        bot.answer_callback_query(call.id, "❌ Incorrect answer! Please try again.", show_alert=True)
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        send_captcha(chat_id)
+
 @bot.callback_query_handler(func=lambda call: call.data == 'check_sub')
 def handle_check_sub(call):
     chat_id = call.message.chat.id
@@ -217,104 +367,17 @@ def handle_text(message):
     chat_id = message.chat.id
     db, sha = get_db()
     
-    # 1. User Registration
     if "users" not in db:
         db["users"] = []
+        
+    # යූසර් අලුත් කෙනෙක් නම්, CAPTCHA එක පෙන්වීම
     if chat_id not in db["users"]:
-        db["users"].append(chat_id)
-        save_db(db, sha)
-        db, sha = get_db()
-        
-    # 2. Referral Logic
-    if "used_refs" not in db:
-        db["used_refs"] = []
-        
-    if text.startswith('/start ref_'):
-        try:
-            referrer_id = int(text.split('_')[1])
-            if referrer_id != chat_id and chat_id not in db["used_refs"]:
-                db["used_refs"].append(chat_id) 
-                
-                current_auth = db.get(f"auth_{referrer_id}", time.time())
-                if current_auth < time.time():
-                    current_auth = time.time()
-                db[f"auth_{referrer_id}"] = current_auth + 86400
-                
-                save_db(db, sha)
-                db, sha = get_db()
-                
-                try:
-                    bot.send_message(referrer_id, "🎉 **Congratulations!**\nA new member joined using your referral link, so you have received an **additional 24 hours of VIP Access!**")
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"Ref Error: {e}")
-
-    # 3. Force Subscribe Check
-    if not check_sub(chat_id):
-        channel_link = CHANNEL_USERNAME.replace('@', '') if CHANNEL_USERNAME else ""
-        markup = types.InlineKeyboardMarkup()
-        if channel_link:
-            markup.add(types.InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_link}"))
-        markup.add(types.InlineKeyboardButton("✅ Check Subscription", callback_data="check_sub"))
-        
-        bot.send_message(
-            chat_id, 
-            "⚠️ **You must join our channel before using the bot!**\n\nClick the button below to join, then click 'Check Subscription'.", 
-            reply_markup=markup
-        )
-        return
-
-    # 4. Commands
-    if text == '/start' or text.startswith('/start ref_') or text == '/start menu':
-        bot.send_chat_action(chat_id, 'typing')
-        markup = get_blogger_videos_keyboard()
-        if markup:
-            bot.send_message(
-                chat_id, 
-                "👋 Welcome!\n\nSelect a video below to generate your unique Ad link:\n\n*(Type /refer to invite friends and get 24 hours of uninterrupted VIP access)*", 
-                reply_markup=markup
-            )
-        else:
-            bot.send_message(chat_id, "No videos found. Please try again later.")
+        pending_users[chat_id] = text
+        send_captcha(chat_id)
         return
         
-    # Referral Command with URL Shortener
-    if text == '/refer':
-        bot.send_chat_action(chat_id, 'typing')
-        
-        long_ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{chat_id}"
-        short_ref_link = create_short_link(long_ref_link)
-        
-        bot.send_message(
-            chat_id, 
-            f"🎁 **Your Referral Link:**\n\n👉 `{short_ref_link}`\n\nShare this link with your friends. When they click it and start the bot, you will get **24 hours of VIP Access** completely free!"
-        )
-        return
-    
-    # 5. Token Verification 
-    if text.startswith('/start '):
-        token = text.split()[1]
-    else:
-        token = text
-        
-    token_key = f"token_{token}"
-    
-    if token_key in db:
-        vid_id = db[token_key]
-        db[f"auth_{chat_id}"] = time.time() + 3600
-        media_data = db.get(vid_id)
-        
-        if media_data:
-            bot.send_message(chat_id, "🎉 **Success! The Bot is now unlocked for 1 HOUR.**")
-            threading.Thread(target=process_and_send_media, args=(chat_id, media_data)).start()
-            del db[token_key]
-            save_db(db, sha)
-        else:
-            bot.send_message(chat_id, "❌ Error retrieving video data.")
-    else:
-        if not text.startswith('/'):
-            bot.send_message(chat_id, "❌ Invalid Key! The key is incorrect, expired, or has already been used.")
+    # දැනටමත් තහවුරු කරපු යූසර් කෙනෙක් නම් සාමාන්‍ය පරිදි ඉදිරියට යාම
+    process_user_command(chat_id, text, db, sha)
 
-print("Bot is running perfectly...")
+print("Bot is running perfectly with Anti-Bot Protection...")
 bot.polling(none_stop=True)
