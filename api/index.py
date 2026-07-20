@@ -21,10 +21,10 @@ BOT_USERNAME = os.environ.get("BOT_USERNAME")
 BLOG_URL = os.environ.get("BLOG_URL")
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME")
 
-# Vercel URL එකට https:// එකතු කිරීමේ අලුත් කොටස
-VERCEL_URL = os.environ.get("VERCEL_URL") 
-if VERCEL_URL and not VERCEL_URL.startswith("http"):
-    VERCEL_URL = "https://" + VERCEL_URL
+# අලුත් HOST_URL එක භාවිතය
+HOST_URL = os.environ.get("HOST_URL") 
+if HOST_URL and not HOST_URL.startswith("http"):
+    HOST_URL = "https://" + HOST_URL
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -33,16 +33,16 @@ auth = Auth.Token(GITHUB_TOKEN)
 github = Github(auth=auth)
 repo = github.get_repo(GITHUB_REPO_NAME)
 
-# --- Auto Webhook Setup (With Cache Clear) ---
+# --- Auto Webhook Setup ---
 try:
-    if VERCEL_URL:
-        webhook_url = VERCEL_URL.rstrip('/') + '/webhook'
+    if HOST_URL:
+        webhook_url = HOST_URL.rstrip('/') + '/webhook'
         current_webhook = bot.get_webhook_info().url
         if current_webhook != webhook_url:
             bot.remove_webhook()
             time.sleep(1) 
             bot.set_webhook(url=webhook_url, drop_pending_updates=True)
-            print("✅ Webhook Cache Cleared & Auto-Configured!")
+            print("✅ Webhook Auto-Configured to HOST_URL!")
 except Exception as e:
     print("❌ Webhook setup error:", e)
 
@@ -108,7 +108,7 @@ def process_and_send_media(chat_id, media_data):
         expire_timestamp = int(time.time()) + 3600 
         raw_data = f"{video_url}:::{expire_timestamp}"
         encoded_data = base64.b64encode(raw_data.encode('utf-8')).decode('utf-8')
-        base_url = VERCEL_URL.rstrip('/') if VERCEL_URL else ""
+        base_url = HOST_URL.rstrip('/') if HOST_URL else ""
         player_url = f"{base_url}/player.html?data={encoded_data}"
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🍿 Watch Secure Player", url=player_url))
@@ -263,7 +263,7 @@ def handle_request(call):
     db[f"token_{token}"] = vid_id
     save_db(db, sha)
     
-    base_url = VERCEL_URL.rstrip('/') if VERCEL_URL else ""
+    base_url = HOST_URL.rstrip('/') if HOST_URL else ""
     short_url = create_short_link(f"{base_url}/index.html?key={token}")
     bot.send_message(chat_id, f"🔗 Watch the Ad and get your key!\n👉 {short_url}")
     bot.answer_callback_query(call.id)
@@ -271,7 +271,7 @@ def handle_request(call):
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
     text = message.text.strip()
-    chat_id = message.chat.id
+    chat_id = message.message.chat.id
     db, sha = get_db()
     
     if "users" not in db: db["users"] = []
@@ -298,7 +298,7 @@ def webhook():
 @app.route('/setwebhook')
 def setwebhook():
     try:
-        webhook_url = VERCEL_URL.rstrip('/') + '/webhook'
+        webhook_url = HOST_URL.rstrip('/') + '/webhook'
         bot.remove_webhook()
         time.sleep(1)
         bot.set_webhook(url=webhook_url, drop_pending_updates=True)
