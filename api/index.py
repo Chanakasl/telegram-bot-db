@@ -19,8 +19,12 @@ GITHUB_REPO_NAME = os.environ.get("GITHUB_REPO_NAME")
 SHORTENER_API = os.environ.get("SHORTENER_API")
 BOT_USERNAME = os.environ.get("BOT_USERNAME")
 BLOG_URL = os.environ.get("BLOG_URL")
-VERCEL_URL = os.environ.get("VERCEL_URL") 
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME")
+
+# Vercel URL එකට https:// එකතු කිරීමේ අලුත් කොටස
+VERCEL_URL = os.environ.get("VERCEL_URL") 
+if VERCEL_URL and not VERCEL_URL.startswith("http"):
+    VERCEL_URL = "https://" + VERCEL_URL
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
@@ -36,8 +40,7 @@ try:
         current_webhook = bot.get_webhook_info().url
         if current_webhook != webhook_url:
             bot.remove_webhook()
-            time.sleep(1) # පොඩි වෙලාවක් දෙනවා Telegram සර්වර් එකට
-            # drop_pending_updates=True මගින් පරණ හිරවුණු මැසේජ් ඔක්කොම Clear කරයි
+            time.sleep(1) 
             bot.set_webhook(url=webhook_url, drop_pending_updates=True)
             print("✅ Webhook Cache Cleared & Auto-Configured!")
 except Exception as e:
@@ -105,7 +108,7 @@ def process_and_send_media(chat_id, media_data):
         expire_timestamp = int(time.time()) + 3600 
         raw_data = f"{video_url}:::{expire_timestamp}"
         encoded_data = base64.b64encode(raw_data.encode('utf-8')).decode('utf-8')
-        base_url = VERCEL_URL.rstrip('/')
+        base_url = VERCEL_URL.rstrip('/') if VERCEL_URL else ""
         player_url = f"{base_url}/player.html?data={encoded_data}"
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🍿 Watch Secure Player", url=player_url))
@@ -260,7 +263,8 @@ def handle_request(call):
     db[f"token_{token}"] = vid_id
     save_db(db, sha)
     
-    short_url = create_short_link(f"{VERCEL_URL.rstrip('/')}/index.html?key={token}")
+    base_url = VERCEL_URL.rstrip('/') if VERCEL_URL else ""
+    short_url = create_short_link(f"{base_url}/index.html?key={token}")
     bot.send_message(chat_id, f"🔗 Watch the Ad and get your key!\n👉 {short_url}")
     bot.answer_callback_query(call.id)
 
@@ -291,7 +295,6 @@ def webhook():
         return '', 200
     return 'Error', 403
 
-# අලුතින් හදපු Manual Webhook Update ලින්ක් එක (ඕන වෙලාවක Cache එක මකන්න)
 @app.route('/setwebhook')
 def setwebhook():
     try:
@@ -309,13 +312,11 @@ def cron_tasks():
         db, sha = get_db()
         changes_made = False
         
-        # Session Cleanup
         for key in list(db.keys()):
             if key.startswith("auth_") and time.time() > db[key]:
                 del db[key]
                 changes_made = True
                 
-        # Auto-Broadcast New Posts
         feed_url = f"https://{BLOG_URL}/feeds/posts/default/-/Video?alt=json&max-results=1"
         data = requests.get(feed_url).json()
         entries = data.get('feed', {}).get('entry', [])
