@@ -9,6 +9,7 @@ import time
 import re
 import uuid
 import base64
+import threading
 from github import Github, Auth
 from flask import Flask, request
 
@@ -21,7 +22,6 @@ BOT_USERNAME = os.environ.get("BOT_USERNAME")
 BLOG_URL = os.environ.get("BLOG_URL")
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME")
 
-# අලුත් HOST_URL එක භාවිතය
 HOST_URL = os.environ.get("HOST_URL") 
 if HOST_URL and not HOST_URL.startswith("http"):
     HOST_URL = "https://" + HOST_URL
@@ -271,7 +271,7 @@ def handle_request(call):
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
     text = message.text.strip()
-    chat_id = message.message.chat.id
+    chat_id = message.chat.id
     db, sha = get_db()
     
     if "users" not in db: db["users"] = []
@@ -285,13 +285,16 @@ def handle_text(message):
         
     process_user_command(chat_id, text, db, sha)
 
-# --- Webhook & Flask Routes ---
+# --- Non-Blocking Webhook (Fixes Timeout) ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
+        
+        # Background Thread එකක වැඩේ දුවන නිසා Vercel එක Timeout වෙන්නේ නෑ
+        threading.Thread(target=bot.process_new_updates, args=([update],)).start()
+        
         return '', 200
     return 'Error', 403
 
@@ -342,4 +345,4 @@ def cron_tasks():
 
 @app.route('/')
 def index():
-    return "Bot is running perfectly on Vercel and Webhook Cache is Cleared!", 200
+    return "Bot is running perfectly on Vercel with Non-Blocking Webhook!", 200
