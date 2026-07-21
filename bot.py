@@ -392,5 +392,23 @@ def handle_text(message):
         
     process_user_command(chat_id, text, db, sha)
 
-print("Bot Version 1.0 (Polling Mode) is running perfectly...")
-bot.infinity_polling()
+from flask import Flask
+import os
+
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is alive and running successfully on Back4App!", 200
+
+def run_bot():
+    print("Bot Version 1.0 (Polling Mode) is running perfectly...")
+    bot.infinity_polling()
+
+if __name__ == "__main__":
+    # Bot එක Background එකේ දුවන්න දානවා
+    threading.Thread(target=run_bot, daemon=True).start()
+    
+    # Back4App එක ඉල්ලන Port එකේ Web Server එක Run කරනවා
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
