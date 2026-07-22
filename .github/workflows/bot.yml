@@ -3,6 +3,8 @@ name: Telegram Bot 24/7 Runner
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'database.json'  # ඩේටාබේස් එක අප්ඩේට් වුණාට අලුත් බොට්ස්ලා හැදෙන එක මේකෙන් නවතිනවා!
   schedule:
     - cron: '0 * * * *'
   workflow_dispatch:
@@ -35,4 +37,5 @@ jobs:
           BLOG_URL: ${{ secrets.BLOG_URL }}
           VERCEL_URL: ${{ secrets.VERCEL_URL }}
           CHANNEL_USERNAME: ${{ secrets.CHANNEL_USERNAME }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
         run: python bot.py
