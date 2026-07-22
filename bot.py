@@ -3,7 +3,6 @@ import telebot
 from telebot import types
 import requests
 import json
-import string
 import random
 import threading
 import time
@@ -12,7 +11,6 @@ import uuid
 import base64
 import logging
 from github import Github, Auth
-from waitress import serve
 from flask import Flask
 
 # Configure logging
@@ -389,4 +387,4 @@ def run_bot():
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
-    serve(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
