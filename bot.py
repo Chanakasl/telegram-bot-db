@@ -102,11 +102,12 @@ def contact_admin(message):
 def admin_reply(message):
     if "New Message from User:" in message.reply_to_message.text:
         try:
-            user_id = message.reply_to_message.text.split('User: ')[1].split('\n')[0].strip()
-            bot.send_message(user_id, f"👨‍💻 **Admin Reply:**\n\n{message.text}")
+            # ID එක අරගන්න කොටසේ තියෙන තරු ලකුණු (*) අයින් කරනවා
+            user_id = message.reply_to_message.text.split('User:')[1].split('\n')[0].replace('*', '').strip()
+            bot.send_message(user_id, f"👨‍💻 **Admin Reply:**\n\n{message.text}", parse_mode="Markdown")
             bot.reply_to(message, "✅ Reply sent to user.")
-        except:
-            bot.reply_to(message, "❌ Failed to send reply. User ID not found.")
+        except Exception as e:
+            bot.reply_to(message, f"❌ Failed to send reply. User ID not found.")
 
 # --- Subscription Check ---
 def check_sub(user_id):
