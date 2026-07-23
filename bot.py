@@ -28,6 +28,9 @@ VERCEL_URL = os.environ.get("VERCEL_URL")
 CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 
+# Welcome Image URL (You can change this link to your own banner/logo)
+WELCOME_IMAGE = "https://files.catbox.moe/uy9hsf.jpg"
+
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # GitHub Authentication
@@ -102,12 +105,12 @@ def contact_admin(message):
 def admin_reply(message):
     if "New Message from User:" in message.reply_to_message.text:
         try:
-            # ID එක අරගන්න කොටසේ තියෙන තරු ලකුණු (*) අයින් කරනවා
+            # Fixed the ID parsing issue by replacing asterisks
             user_id = message.reply_to_message.text.split('User:')[1].split('\n')[0].replace('*', '').strip()
             bot.send_message(user_id, f"👨‍💻 **Admin Reply:**\n\n{message.text}", parse_mode="Markdown")
             bot.reply_to(message, "✅ Reply sent to user.")
-        except Exception as e:
-            bot.reply_to(message, f"❌ Failed to send reply. User ID not found.")
+        except:
+            bot.reply_to(message, "❌ Failed to send reply. User ID not found.")
 
 # --- Subscription Check ---
 def check_sub(user_id):
@@ -198,6 +201,13 @@ def process_and_send_media(chat_id, media_data):
     else:
         bot.send_message(chat_id, "⚠️ No video link found for this entry.")
 
+# --- Reply Keyboard (Main Menu) ---
+def get_main_menu():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("🎬 All Videos", "👤 My Profile")
+    markup.add("🎁 Free VIP (Refer)", "📞 Contact Admin")
+    return markup
+
 # --- Main Command Processor ---
 def process_user_command(chat_id, text, db, sha):
     if "used_refs" not in db: db["used_refs"] = []
@@ -224,6 +234,19 @@ def process_user_command(chat_id, text, db, sha):
         bot.send_message(chat_id, "⚠️ **You must join our channel before using the bot!**\n\nClick the button below to join, then click 'Check Subscription'.", reply_markup=markup)
         return
 
+    # --- Feature: User Profile ---
+    if text == '/profile':
+        auth_time = db.get(f"auth_{chat_id}", 0)
+        if auth_time > time.time():
+            left_mins = int((auth_time - time.time()) / 60)
+            status = f"✅ VIP Active ({left_mins} mins left)"
+        else:
+            status = "❌ Not Active (Watch Ad to unlock)"
+        
+        profile_msg = f"👤 **Your Profile**\n\n🆔 User ID: `{chat_id}`\n👑 VIP Status: {status}"
+        bot.send_message(chat_id, profile_msg, parse_mode="Markdown", reply_markup=get_main_menu())
+        return
+
     if text.startswith('/search'):
         query = text.replace('/search', '').strip()
         if not query:
@@ -237,9 +260,22 @@ def process_user_command(chat_id, text, db, sha):
 
     if text == '/start' or text.startswith('/start ref_') or text == '/start menu':
         bot.send_chat_action(chat_id, 'typing')
-        markup = get_blogger_videos_keyboard(page=1)
-        if markup:
-            bot.send_message(chat_id, "👋 Welcome!\n\nSelect a video below to generate your unique Ad link:\n\n*(Type /refer to invite friends and get VIP access. Type /contact to message admin.)*", reply_markup=markup)
+        # Welcome message with Image and Main Menu
+        try:
+            bot.send_photo(
+                chat_id, 
+                WELCOME_IMAGE,
+                caption="🔥 **Welcome to CHUCKY OFFICI4L Bot!** 🔥\n\nUse the buttons below to navigate.",
+                parse_mode="Markdown",
+                reply_markup=get_main_menu()
+            )
+        except:
+            bot.send_message(chat_id, "🔥 **Welcome to CHUCKY OFFICI4L Bot!** 🔥", parse_mode="Markdown", reply_markup=get_main_menu())
+        
+        # Inline Video List
+        markup_inline = get_blogger_videos_keyboard(page=1)
+        if markup_inline:
+            bot.send_message(chat_id, "👇 **Choose a video below to watch:**", reply_markup=markup_inline, parse_mode="Markdown")
         else:
             bot.send_message(chat_id, "No videos found. Please try again later.")
         return
@@ -247,11 +283,11 @@ def process_user_command(chat_id, text, db, sha):
     if text == '/refer':
         long_ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{chat_id}"
         short_ref_link = create_short_link(long_ref_link)
-        bot.send_message(chat_id, f"🎁 **Your Referral Link:**\n\n👉 `{short_ref_link}`", parse_mode="Markdown")
+        bot.send_message(chat_id, f"🎁 **Your Referral Link:**\n\n👉 `{short_ref_link}`\n\nShare this link to get VIP access!", parse_mode="Markdown")
         return
 
     if text == '/help':
-        help_text = "🤖 **Commands**\n/start - Show video list\n/search <name> - Search\n/refer - Get your referral link\n/contact <msg> - Message Admin"
+        help_text = "🤖 **Commands**\n/start - Show video list\n/search <name> - Search\n/refer - Get your referral link\n/profile - Check VIP Status\n/contact <msg> - Message Admin"
         if ADMIN_ID and str(chat_id) == ADMIN_ID:
             help_text += "\n\n**Admin Commands:**\n/stats - Users count\n/admin broadcast <message> - Send broadcast"
         bot.send_message(chat_id, help_text, parse_mode="Markdown")
@@ -313,6 +349,10 @@ def handle_captcha(call):
             save_db(db, sha)
             db, sha = get_db()
         original_cmd = pending_users.pop(chat_id, '/start')
+        # Re-trigger logic
+        if original_cmd == "🎬 All Videos": original_cmd = "/start menu"
+        elif original_cmd == "👤 My Profile": original_cmd = "/profile"
+        elif original_cmd == "🎁 Free VIP (Refer)": original_cmd = "/refer"
         process_user_command(chat_id, original_cmd, db, sha)
     else:
         bot.answer_callback_query(call.id, "❌ Incorrect! Try again.", show_alert=True)
@@ -326,7 +366,7 @@ def handle_check_sub(call):
     if check_sub(chat_id):
         try: bot.delete_message(chat_id, call.message.message_id)
         except: pass
-        bot.send_message(chat_id, "✅ **Thank you!**\n\nType /start to watch videos.")
+        bot.send_message(chat_id, "✅ **Thank you!**\n\nType /start to watch videos.", reply_markup=get_main_menu())
     else:
         bot.answer_callback_query(call.id, "❌ Join the channel first!", show_alert=True)
 
@@ -362,7 +402,7 @@ def handle_pagination(call):
     page = int(call.data.split('_')[1])
     chat_id = call.message.chat.id
     markup = get_blogger_videos_keyboard(page=page)
-    if markup: bot.edit_message_text("📹 **Video List**:", chat_id, call.message.message_id, reply_markup=markup)
+    if markup: bot.edit_message_text("👇 **Choose a video below to watch:**", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
     else: bot.answer_callback_query(call.id, "No more videos.", show_alert=True)
 
 @bot.message_handler(func=lambda m: True)
@@ -370,11 +410,29 @@ def handle_text(message):
     text = message.text.strip()
     chat_id = message.chat.id
     db, sha = get_db()
+    
     if "users" not in db: db["users"] = []
     if chat_id not in db["users"]:
         pending_users[chat_id] = text
         send_captcha(chat_id)
         return
+        
+    # Process Reply Keyboard Clicks
+    if text == "🎬 All Videos":
+        process_user_command(chat_id, '/start menu', db, sha)
+        return
+    elif text == "👤 My Profile":
+        process_user_command(chat_id, '/profile', db, sha)
+        return
+    elif text == "🎁 Free VIP (Refer)":
+        process_user_command(chat_id, '/refer', db, sha)
+        return
+    elif text == "📞 Contact Admin":
+        msg = bot.send_message(chat_id, "✍️ කරුණාකර `/contact` විධානයට පසු ඔබේ පණිවිඩය ටයිප් කරන්න.\nඋදා: `/contact මට උදව් ඕන`", parse_mode="Markdown")
+        auto_delete_message(chat_id, msg.message_id, 30)
+        auto_delete_message(chat_id, message.message_id, 5)
+        return
+
     process_user_command(chat_id, text, db, sha)
 
 # --- Flask App ---
